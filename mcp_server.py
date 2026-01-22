@@ -25,6 +25,7 @@ import argparse
 import time
 import uuid
 import traceback
+import ssl
 import subprocess
 import urllib.request
 import urllib.error
@@ -152,17 +153,35 @@ class TaskExecutor:
         method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
         body: Optional[str] = None,
-        timeout: int = 30
+        timeout: int = 30,
+        verify_ssl: bool = True
     ) -> Dict[str, Any]:
-        """Execute HTTP request and return response."""
+        """Execute HTTP request and return response.
+
+        Args:
+            url: The URL to request
+            method: HTTP method (GET, POST, etc.)
+            headers: Optional HTTP headers
+            body: Optional request body
+            timeout: Request timeout in seconds
+            verify_ssl: If False, skip SSL certificate verification (useful for
+                       local environments or when dealing with certificate issues)
+        """
         headers = headers or {}
 
         # Build request
         data = body.encode('utf-8') if body else None
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
+        # Create SSL context - optionally disable verification
+        ssl_context = None
+        if not verify_ssl:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as response:
                 content = response.read().decode('utf-8', errors='replace')
                 return {
                     "status_code": response.status,
@@ -295,7 +314,8 @@ class AgentTasker:
                     method=task.payload.get("method", "GET"),
                     headers=task.payload.get("headers"),
                     body=task.payload.get("body"),
-                    timeout=task.payload.get("timeout", 30)
+                    timeout=task.payload.get("timeout", 30),
+                    verify_ssl=task.payload.get("verify_ssl", True)
                 )
             elif task.task_type == TaskType.SHELL_COMMAND:
                 task.result = TaskExecutor.execute_shell_command(
@@ -529,6 +549,10 @@ Tasks are created in PENDING state and must be run with run_tasks.""",
                             "type": "string",
                             "description": "HTTP request body"
                         },
+                        "verify_ssl": {
+                            "type": "boolean",
+                            "description": "Verify SSL certificates (default: true). Set to false to bypass certificate errors."
+                        },
                         "command": {
                             "type": "string",
                             "description": "Shell command to execute (for shell_command type)"
@@ -650,6 +674,7 @@ Each task in the batch should have: name, task_type, and type-specific parameter
                                     "method": {"type": "string"},
                                     "headers": {"type": "object"},
                                     "body": {"type": "string"},
+                                    "verify_ssl": {"type": "boolean"},
                                     "command": {"type": "string"},
                                     "path": {"type": "string"},
                                     "content": {"type": "string"},
@@ -685,6 +710,7 @@ Each task in the batch should have: name, task_type, and type-specific parameter
                     payload["headers"] = arguments.get("headers")
                     payload["body"] = arguments.get("body")
                     payload["timeout"] = arguments.get("timeout", 30)
+                    payload["verify_ssl"] = arguments.get("verify_ssl", True)
                 elif task_type == TaskType.SHELL_COMMAND:
                     payload["command"] = arguments.get("command", "")
                     payload["timeout"] = arguments.get("timeout", 60)
@@ -759,6 +785,7 @@ Each task in the batch should have: name, task_type, and type-specific parameter
                         payload["headers"] = task_def.get("headers")
                         payload["body"] = task_def.get("body")
                         payload["timeout"] = task_def.get("timeout", 30)
+                        payload["verify_ssl"] = task_def.get("verify_ssl", True)
                     elif task_type == TaskType.SHELL_COMMAND:
                         payload["command"] = task_def.get("command", "")
                         payload["timeout"] = task_def.get("timeout", 60)

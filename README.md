@@ -171,6 +171,7 @@ Create a single task for later execution.
 | `method` | string | No | HTTP method (GET, POST, PUT, DELETE, PATCH). Default: GET |
 | `headers` | object | No | HTTP headers as key-value pairs |
 | `body` | string | No | HTTP request body |
+| `verify_ssl` | boolean | No | Verify SSL certificates (default: true). Set to false to bypass certificate errors |
 | `command` | string | For shell_command | Shell command to execute |
 | `path` | string | For file ops | File path to read/write |
 | `content` | string | For file_write | Content to write |
@@ -302,9 +303,12 @@ Make HTTP requests with full control over method, headers, and body.
   "method": "POST",
   "headers": {"Content-Type": "application/json", "Authorization": "Bearer token"},
   "body": "{\"key\": \"value\"}",
-  "timeout": 30
+  "timeout": 30,
+  "verify_ssl": true
 }
 ```
+
+Set `verify_ssl: false` to bypass SSL certificate verification (useful for local environments or self-signed certificates).
 
 ### shell_command
 
