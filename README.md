@@ -406,17 +406,6 @@ sudo systemctl enable agent-tasker
 sudo systemctl start agent-tasker
 ```
 
-### With Docker
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY mcp_server.py .
-CMD ["python", "mcp_server.py", "--workers", "8"]
-```
-
 ## How It Works
 
 ```
