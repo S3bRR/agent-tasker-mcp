@@ -220,9 +220,12 @@ Make HTTP requests.
   "method": "POST",
   "headers": {"Authorization": "Bearer token"},
   "body": "{\"key\": \"value\"}",
-  "timeout": 30
+  "timeout": 30,
+  "verify_ssl": true
 }
 ```
+
+Use `"verify_ssl": false` to bypass SSL certificate verification when needed.
 
 **Response:**
 ```json
