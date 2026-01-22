@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "agent-tasker": {
+      "command": "python",
+      "args": [
+        "/path/to/agent-tasker-mcp/mcp_server.py",
+        "--workers",
+        "8"
+      ],
+      "env": {}
+    }
+  }
+}

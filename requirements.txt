@@ -1,3 +1,5 @@
-# AgentTasker has no external dependencies
-# Uses Python standard library only
-# Tested with Python 3.7+
+# AgentTasker MCP Server
+# Python 3.10+ required
+
+# MCP SDK for Model Context Protocol server
+mcp>=1.0.0
