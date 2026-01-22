@@ -1,24 +1,31 @@
 {
-  "name": "task-executor",
-  "version": "1.0.0",
-  "description": "AgentTasker - Parallel task execution engine for Clawdbot",
-  "main": "agent_tasker.py",
-  "author": "Clawdbot Contributors",
+  "name": "agent-tasker-mcp",
+  "version": "2.0.0",
+  "description": "AgentTasker MCP Server - Universal parallel task execution for AI agents",
+  "main": "mcp_server.py",
+  "author": "AgentTasker Contributors",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/clawdbot/skills"
+    "url": "https://github.com/agenttasker/agent-tasker-mcp"
   },
   "keywords": [
-    "clawdbot",
-    "skill",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "claude",
     "parallel",
     "task-execution",
     "threading",
-    "async",
-    "concurrent"
+    "concurrent",
+    "automation"
   ],
   "scripts": {
-    "test": "python3 examples/basic_usage.py"
+    "start": "python3 mcp_server.py",
+    "setup": "bash setup.sh",
+    "test": "python3 -c \"from mcp_server import AgentTasker; print('OK')\""
+  },
+  "engines": {
+    "python": ">=3.10"
   }
 }

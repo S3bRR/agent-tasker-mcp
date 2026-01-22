@@ -1,526 +1,500 @@
-# AgentTasker - Parallel Task Execution Engine
+# AgentTasker MCP Server
 
-A production-grade Python library for executing multiple independent tasks in parallel with automatic worker management, real-time progress tracking, and comprehensive result aggregation.
+A self-hosted MCP (Model Context Protocol) server that gives AI agents the power to execute tasks in parallel. Works with Claude, GPT, and any MCP-compatible AI agent.
 
-## Overview
+## What is This?
 
-AgentTasker enables efficient parallel task execution by distributing work across multiple worker threads. Transform sequential operations into concurrent execution to dramatically improve throughput.
+AgentTasker is an MCP server that enables AI agents to:
 
-### What It Does
+- **Execute Python code** in parallel across multiple workers
+- **Make HTTP requests** concurrently (API calls, web scraping)
+- **Run shell commands** in parallel
+- **Read/write files** simultaneously
+- **Track task status** and aggregate results
 
-- Execute any Python function in parallel
-- Automatic worker pool management
-- Real-time task status tracking
-- Comprehensive error handling
-- Result aggregation and reporting
-- Performance metrics and timing
+Instead of running tasks sequentially, agents can now batch operations and execute them concurrently, dramatically improving throughput.
 
-### Why You Need It
-
-Sequential task execution is slow:
 ```
-100 tasks × 1 second each = 100 seconds
+Sequential: 100 API calls × 1 second = 100 seconds
+Parallel:   100 API calls ÷ 8 workers = ~13 seconds (8x faster)
 ```
-
-Parallel execution with AgentTasker is fast:
-```
-100 tasks ÷ 8 workers = 12-15 seconds (8x faster)
-```
-
-## Installation
-
-### Via ClawdHub
-
-```bash
-clawdhub install task-executor
-```
-
-### Manual
-
-```bash
-cp -r task-executor ~/.clawdbot/skills/
-cd ~/.clawdbot/skills/task-executor
-pip install -r requirements.txt
-```
-
-### Requirements
-
-- Python 3.7 or higher
-- No external dependencies (uses standard library only)
 
 ## Quick Start
 
-### Basic Usage
+### 1. Install
 
-```python
-from agent_tasker import AgentTasker
+```bash
+git clone https://github.com/yourusername/agent-tasker-mcp.git
+cd agent-tasker-mcp
 
-# Create task executor with 4 workers
-tasker = AgentTasker(max_workers=4)
+# Option A: Quick setup script
+chmod +x setup.sh && ./setup.sh
 
-# Define a task function
-def process_item(item_id):
-    return item_id * 2
-
-# Create tasks
-for i in range(10):
-    tasker.create_task(f"process_{i}", process_item, i)
-
-# Execute all tasks in parallel
-results = tasker.run_tasks()
-
-# Process results
-for task_id, task_result in results["tasks"].items():
-    print(f"Task {task_id}: {task_result['result']}")
+# Option B: Manual install
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Real-World Example: API Requests
+### 2. Configure Your AI Client
 
-```python
-from agent_tasker import AgentTasker
-import requests
-
-def fetch_user(user_id):
-    response = requests.get(f"https://api.example.com/users/{user_id}")
-    return response.json()
-
-tasker = AgentTasker(max_workers=8)
-
-# Queue 100 API requests
-for user_id in range(1, 101):
-    tasker.create_task(f"fetch_user_{user_id}", fetch_user, user_id)
-
-# Execute all in parallel
-results = tasker.run_tasks()
-
-# Collect successful results
-users = []
-for task_id, task_result in results["tasks"].items():
-    if task_result["status"] == "completed":
-        users.append(task_result["result"])
-
-print(f"Retrieved {len(users)} users")
-```
-
-## Features
-
-### Task Management
-
-- Create tasks with arbitrary function arguments
-- Automatic task ID generation
-- Task naming for easy identification
-- Support for positional and keyword arguments
-
-### Worker Management
-
-- Configurable worker count (1-32+)
-- Automatic thread pool lifecycle management
-- Efficient workload distribution
-- Graceful shutdown handling
-
-### Progress Tracking
-
-- Real-time task status monitoring
-- Per-task timing information
-- Aggregate statistics
-- Success/failure reporting
-
-### Error Handling
-
-- Task-level exception capture
-- Error messages preserved
-- Non-blocking failure (other tasks continue)
-- Comprehensive error reporting
-
-### Result Aggregation
-
-- All results returned in structured format
-- Timing information for each task
-- Execution statistics
-- Easy result filtering and processing
-
-## Use Cases
-
-### Web Scraping
-
-Scrape multiple websites simultaneously:
-
-```python
-from agent_tasker import AgentTasker
-from web_scraper import PowerScraper
-
-scraper = PowerScraper()
-tasker = AgentTasker(max_workers=10)
-
-websites = [
-    "https://site1.com",
-    "https://site2.com",
-    "https://site3.com",
-]
-
-for website in websites:
-    tasker.create_task(f"scrape_{website}", scraper.fetch, website)
-
-results = tasker.run_tasks()
-```
-
-### Data Processing
-
-Process multiple files in parallel:
-
-```python
-def process_file(filename):
-    with open(filename) as f:
-        return len(f.readlines())
-
-tasker = AgentTasker(max_workers=8)
-
-for filename in files:
-    tasker.create_task(f"process_{filename}", process_file, filename)
-
-results = tasker.run_tasks()
-```
-
-### API Integration
-
-Call multiple API endpoints simultaneously:
-
-```python
-def call_endpoint(endpoint):
-    import requests
-    return requests.get(f"https://api.example.com{endpoint}").json()
-
-tasker = AgentTasker(max_workers=10)
-
-endpoints = ["/users", "/posts", "/comments", "/products"]
-
-for endpoint in endpoints:
-    tasker.create_task(f"call_{endpoint}", call_endpoint, endpoint)
-
-results = tasker.run_tasks()
-```
-
-### Batch Email Sending
-
-Send emails to thousands of recipients in parallel:
-
-```python
-def send_email(recipient, subject, body):
-    import smtplib
-    # Email sending implementation
-    return True
-
-tasker = AgentTasker(max_workers=20)
-
-for recipient in recipients:
-    tasker.create_task(
-        f"email_{recipient}",
-        send_email,
-        recipient,
-        "Newsletter",
-        "Content..."
-    )
-
-results = tasker.run_tasks()
-```
-
-### Load Testing
-
-Stress test your API with concurrent requests:
-
-```python
-def make_request(request_num):
-    import requests
-    return requests.get("https://yourapi.com/endpoint").status_code
-
-tasker = AgentTasker(max_workers=50)
-
-for i in range(1000):
-    tasker.create_task(f"request_{i}", make_request, i)
-
-results = tasker.run_tasks()
-```
-
-## Performance Guide
-
-### Optimal Worker Count
-
-Adjust based on task type:
-
-```python
-# I/O-bound tasks (network, file operations)
-tasker = AgentTasker(max_workers=16)
-
-# CPU-bound tasks (computation)
-tasker = AgentTasker(max_workers=4)
-
-# Mixed workload (recommended default)
-tasker = AgentTasker(max_workers=8)
-```
-
-### Performance Metrics
-
-```
-Task Count | Sequential | Parallel(8) | Speedup
------------|-----------|------------|--------
-10         | 10s       | 2s         | 5x
-50         | 50s       | 7s         | 7x
-100        | 100s      | 13s        | 8x
-1000       | 1000s     | 125s       | 8x
-```
-
-### Memory Considerations
-
-- Each worker consumes minimal memory
-- Task results stored in memory until cleared
-- For large result sets, process incrementally
-- Call tasker.clear() to free memory
-
-## API Reference
-
-### AgentTasker
-
-Main class for task management and execution.
-
-#### __init__(max_workers: int = 4)
-
-Initialize the task executor.
-
-**Parameters:**
-- max_workers (int): Number of parallel worker threads. Default: 4
-
-**Example:**
-```python
-tasker = AgentTasker(max_workers=8)
-```
-
-#### create_task(name: str, function: Callable, *args, **kwargs) -> str
-
-Create a task for later execution.
-
-**Parameters:**
-- name (str): Unique task identifier
-- function (Callable): Function to execute
-- args (tuple): Positional arguments
-- kwargs (dict): Keyword arguments
-
-**Returns:**
-- str: Task ID
-
-**Example:**
-```python
-task_id = tasker.create_task("my_task", my_function, arg1, kwarg1=value1)
-```
-
-#### run_tasks(task_ids: Optional[List[str]] = None, wait: bool = True) -> Dict
-
-Execute tasks in parallel.
-
-**Parameters:**
-- task_ids (List[str], optional): Specific tasks to run. Default: all
-- wait (bool): Block until completion. Default: True
-
-**Returns:**
-- Dict: Execution results and statistics
-
-**Example:**
-```python
-results = tasker.run_tasks([task1_id, task2_id], wait=True)
-```
-
-#### get_task_status(task_id: str) -> Dict
-
-Get status of a specific task.
-
-**Parameters:**
-- task_id (str): Task identifier
-
-**Returns:**
-- Dict: Task status information
-
-**Example:**
-```python
-status = tasker.get_task_status(task_id)
-print(status["status"])  # "completed", "failed", etc.
-```
-
-#### get_all_status() -> Dict[str, Dict]
-
-Get status of all tasks.
-
-**Returns:**
-- Dict: Mapping of task IDs to status dictionaries
-
-**Example:**
-```python
-all_statuses = tasker.get_all_status()
-```
-
-#### summary() -> Dict
-
-Get aggregate statistics.
-
-**Returns:**
-- Dict: Summary metrics including total, completed, failed counts
-
-**Example:**
-```python
-summary = tasker.summary()
-print(f"Completed: {summary['completed']}/{summary['total_tasks']}")
-```
-
-#### clear()
-
-Clear all tasks from memory.
-
-**Example:**
-```python
-tasker.clear()
-```
-
-## Response Format
-
-### Task Status
+**Claude Desktop** (`~/.config/claude/claude_desktop_config.json`):
 
 ```json
 {
-  "id": "task_123",
-  "name": "fetch_user_1",
-  "status": "completed",
-  "result": {
-    "id": 1,
-    "name": "John Doe"
-  },
-  "error": null,
-  "started_at": "2026-01-22T14:00:00",
-  "completed_at": "2026-01-22T14:00:01",
-  "duration": 1.234
-}
-```
-
-### Execution Results
-
-```json
-{
-  "total": 10,
-  "completed": 9,
-  "failed": 1,
-  "started_at": "2026-01-22T14:00:00",
-  "completed_at": "2026-01-22T14:00:10",
-  "tasks": {
-    "task_1": {...},
-    "task_2": {...}
+  "mcpServers": {
+    "agent-tasker": {
+      "command": "python",
+      "args": ["/path/to/agent-tasker-mcp/mcp_server.py", "--workers", "8"],
+      "env": {}
+    }
   }
 }
 ```
 
-### Summary Statistics
+**Claude Code** (`~/.claude/settings.json`):
 
 ```json
 {
-  "total_tasks": 100,
-  "completed": 98,
-  "failed": 2,
-  "running": 0,
-  "pending": 0,
-  "success_rate": "98.0%",
-  "total_duration_seconds": "12.45"
+  "mcpServers": {
+    "agent-tasker": {
+      "command": "python",
+      "args": ["/path/to/agent-tasker-mcp/mcp_server.py", "--workers", "8"]
+    }
+  }
 }
 ```
 
-## Error Handling
+### 3. Use It
 
-Tasks that raise exceptions are captured without affecting other tasks:
+Once configured, your AI agent will have access to these tools:
 
-```python
-def may_fail(value):
-    if value < 0:
-        raise ValueError("Negative value not allowed")
-    return value * 2
+| Tool | Description |
+|------|-------------|
+| `create_task` | Create a task (Python code, HTTP, shell, file ops) |
+| `run_tasks` | Execute pending tasks in parallel |
+| `execute_batch` | Create and run multiple tasks in one call |
+| `get_task` | Get details of a specific task |
+| `list_tasks` | List all tasks with optional status filter |
+| `get_summary` | Get execution statistics |
+| `clear_tasks` | Clear completed/all tasks |
 
-tasker = AgentTasker()
-tasker.create_task("fail", may_fail, -5)
-results = tasker.run_tasks()
+## Usage Examples
 
-# Check result
-task_result = results["tasks"]["fail"]
-if task_result["status"] == "failed":
-    print(f"Error: {task_result['error']}")
+### Example 1: Parallel API Calls
+
+**Agent prompt**: "Fetch data from these 5 API endpoints in parallel"
+
+The agent can use `execute_batch`:
+
+```json
+{
+  "tasks": [
+    {"name": "users", "task_type": "http_request", "url": "https://api.example.com/users"},
+    {"name": "posts", "task_type": "http_request", "url": "https://api.example.com/posts"},
+    {"name": "comments", "task_type": "http_request", "url": "https://api.example.com/comments"},
+    {"name": "products", "task_type": "http_request", "url": "https://api.example.com/products"},
+    {"name": "orders", "task_type": "http_request", "url": "https://api.example.com/orders"}
+  ]
+}
 ```
 
-## Best Practices
+All 5 requests execute simultaneously instead of one-by-one.
 
-1. Use clear task names for debugging
-2. Keep tasks independent (avoid shared state)
-3. Handle exceptions within task functions when appropriate
-4. Monitor results before processing
-5. Use appropriate worker count for workload
-6. Clear tasks after processing to free memory
-7. Test with small task counts before scaling
+### Example 2: Parallel Python Computation
+
+**Agent prompt**: "Calculate prime numbers in ranges 1-10000, 10001-20000, and 20001-30000"
+
+```json
+{
+  "tasks": [
+    {
+      "name": "primes_1",
+      "task_type": "python_code",
+      "code": "result = [n for n in range(1, 10001) if all(n % i != 0 for i in range(2, int(n**0.5)+1)) and n > 1]"
+    },
+    {
+      "name": "primes_2",
+      "task_type": "python_code",
+      "code": "result = [n for n in range(10001, 20001) if all(n % i != 0 for i in range(2, int(n**0.5)+1))]"
+    },
+    {
+      "name": "primes_3",
+      "task_type": "python_code",
+      "code": "result = [n for n in range(20001, 30001) if all(n % i != 0 for i in range(2, int(n**0.5)+1))]"
+    }
+  ]
+}
+```
+
+### Example 3: Parallel File Processing
+
+**Agent prompt**: "Read all config files in parallel"
+
+```json
+{
+  "tasks": [
+    {"name": "config1", "task_type": "file_read", "path": "/app/config/database.yml"},
+    {"name": "config2", "task_type": "file_read", "path": "/app/config/redis.yml"},
+    {"name": "config3", "task_type": "file_read", "path": "/app/config/app.yml"}
+  ]
+}
+```
+
+### Example 4: Parallel Shell Commands
+
+**Agent prompt**: "Check disk usage, memory, and running processes"
+
+```json
+{
+  "tasks": [
+    {"name": "disk", "task_type": "shell_command", "command": "df -h"},
+    {"name": "memory", "task_type": "shell_command", "command": "free -m"},
+    {"name": "processes", "task_type": "shell_command", "command": "ps aux --sort=-%cpu | head -10"}
+  ]
+}
+```
+
+## MCP Tools Reference
+
+### create_task
+
+Create a single task for later execution.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Human-readable task name |
+| `task_type` | string | Yes | One of: `python_code`, `http_request`, `shell_command`, `file_read`, `file_write` |
+| `code` | string | For python_code | Python code to execute. Use `result = ...` to return data |
+| `url` | string | For http_request | URL to request |
+| `method` | string | No | HTTP method (GET, POST, PUT, DELETE, PATCH). Default: GET |
+| `headers` | object | No | HTTP headers as key-value pairs |
+| `body` | string | No | HTTP request body |
+| `command` | string | For shell_command | Shell command to execute |
+| `path` | string | For file ops | File path to read/write |
+| `content` | string | For file_write | Content to write |
+| `mode` | string | No | Write mode: "w" (overwrite) or "a" (append). Default: w |
+| `timeout` | integer | No | Timeout in seconds |
+
+**Returns:**
+```json
+{
+  "task_id": "a1b2c3d4",
+  "name": "my_task",
+  "task_type": "python_code",
+  "status": "pending",
+  "message": "Task 'my_task' created. Run with run_tasks to execute."
+}
+```
+
+### run_tasks
+
+Execute pending tasks in parallel.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_ids` | array | No | Specific task IDs to run. Default: all pending |
+
+**Returns:**
+```json
+{
+  "total": 5,
+  "completed": 4,
+  "failed": 1,
+  "started_at": "2026-01-22T14:00:00",
+  "completed_at": "2026-01-22T14:00:02",
+  "tasks": {
+    "a1b2c3d4": {
+      "id": "a1b2c3d4",
+      "name": "task_1",
+      "task_type": "http_request",
+      "status": "completed",
+      "result": {"status_code": 200, "body": "..."},
+      "error": null,
+      "duration_seconds": 0.45
+    }
+  }
+}
+```
+
+### execute_batch
+
+Create and immediately run multiple tasks in one call. Best for running a batch of similar operations.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `tasks` | array | Yes | Array of task definitions (same schema as create_task) |
+
+### get_task
+
+Get detailed information about a specific task.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_id` | string | Yes | Task ID to retrieve |
+
+### list_tasks
+
+List all tasks with optional status filter.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | No | Filter: `pending`, `running`, `completed`, `failed` |
+
+### get_summary
+
+Get execution statistics.
+
+**Returns:**
+```json
+{
+  "total_tasks": 100,
+  "completed": 95,
+  "failed": 5,
+  "running": 0,
+  "pending": 0,
+  "success_rate": "95.0%",
+  "total_duration_seconds": 12.34,
+  "max_workers": 8
+}
+```
+
+### clear_tasks
+
+Clear tasks from memory.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | No | Only clear tasks with this status. Default: all |
+
+## Task Types
+
+### python_code
+
+Execute Python code. Use the special `result` variable to return data.
+
+```python
+# Simple calculation
+result = sum(range(100))
+
+# Data processing
+import json
+data = [1, 2, 3, 4, 5]
+result = {"sum": sum(data), "avg": sum(data)/len(data)}
+
+# Available in namespace: json, time, datetime, Path
+```
+
+### http_request
+
+Make HTTP requests with full control over method, headers, and body.
+
+```json
+{
+  "task_type": "http_request",
+  "url": "https://api.example.com/data",
+  "method": "POST",
+  "headers": {"Content-Type": "application/json", "Authorization": "Bearer token"},
+  "body": "{\"key\": \"value\"}",
+  "timeout": 30
+}
+```
+
+### shell_command
+
+Run shell commands and capture output.
+
+```json
+{
+  "task_type": "shell_command",
+  "command": "ls -la /tmp",
+  "timeout": 60
+}
+```
+
+Returns: `{"stdout": "...", "stderr": "...", "return_code": 0}`
+
+### file_read
+
+Read file contents.
+
+```json
+{
+  "task_type": "file_read",
+  "path": "/path/to/file.txt"
+}
+```
+
+Returns: `{"path": "...", "content": "...", "size_bytes": 1234}`
+
+### file_write
+
+Write content to a file.
+
+```json
+{
+  "task_type": "file_write",
+  "path": "/path/to/file.txt",
+  "content": "Hello, World!",
+  "mode": "w"
+}
+```
+
+## Configuration
+
+### Worker Count
+
+Adjust based on your workload:
+
+```bash
+# I/O-bound (network, files) - more workers
+python mcp_server.py --workers 16
+
+# CPU-bound (computation) - fewer workers
+python mcp_server.py --workers 4
+
+# Mixed/default
+python mcp_server.py --workers 8
+```
+
+### Performance Guidelines
+
+| Workload Type | Recommended Workers | Example |
+|--------------|---------------------|---------|
+| API calls | 8-16 | Web scraping, REST APIs |
+| File processing | 4-8 | Reading logs, configs |
+| Computation | 2-4 | Data processing |
+| Mixed | 8 | General purpose |
+
+## Self-Hosting Options
+
+### Direct Python
+
+```bash
+source venv/bin/activate
+python mcp_server.py --workers 8
+```
+
+### With systemd
+
+Create `/etc/systemd/system/agent-tasker.service`:
+
+```ini
+[Unit]
+Description=AgentTasker MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/agent-tasker-mcp
+ExecStart=/path/to/agent-tasker-mcp/venv/bin/python mcp_server.py --workers 8
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable agent-tasker
+sudo systemctl start agent-tasker
+```
+
+## How It Works
+
+```
+AI Agent
+    |
+    | MCP Protocol (JSON-RPC over stdio)
+    v
++-------------------+
+| AgentTasker MCP   |
+| Server            |
++-------------------+
+    |
+    | Creates tasks
+    v
++-------------------+
+| Task Queue        |
+| [task1, task2...] |
++-------------------+
+    |
+    | Distributes to workers
+    v
++-------------------+
+| Thread Pool       |
+| [w1][w2][w3][w4]  |
++-------------------+
+    |
+    | Executes in parallel
+    v
++-------------------+
+| Results           |
+| {task1: result1}  |
++-------------------+
+    |
+    | Returns to agent
+    v
+AI Agent
+```
+
+## Best Practices for Agents
+
+1. **Batch similar operations**: Use `execute_batch` for multiple similar tasks
+2. **Check results**: Always check task status before using results
+3. **Clear when done**: Call `clear_tasks` after processing to free memory
+4. **Use appropriate timeouts**: Set timeouts based on expected task duration
+5. **Handle failures gracefully**: Some tasks may fail; process successful ones
 
 ## Troubleshooting
 
-### Tasks not executing
+### Server not connecting
 
-Ensure max_workers is greater than number of tasks:
-```python
-tasker = AgentTasker(max_workers=10)
-# Good for 1-100 tasks
+1. Check the path in your MCP config is absolute
+2. Ensure Python virtual environment is set up
+3. Verify mcp package is installed: `pip show mcp`
+
+### Tasks timing out
+
+Increase timeout in task definition:
+```json
+{"task_type": "http_request", "url": "...", "timeout": 60}
 ```
 
 ### High memory usage
 
-Process results in batches:
-```python
-results = tasker.run_tasks()
-process_results(results)
-tasker.clear()
+Clear completed tasks periodically:
+```json
+{"tool": "clear_tasks", "arguments": {"status": "completed"}}
 ```
 
-### Function not found errors
+### Python code errors
 
-Ensure functions are defined at module level, not inside other functions.
-
-### Tasks timing out
-
-Implement timeout logic inside task functions:
-```python
-def task_with_timeout(url, timeout=10):
-    import requests
-    return requests.get(url, timeout=timeout)
+Check the error field in task result:
+```json
+{
+  "status": "failed",
+  "error": "NameError: name 'undefined_var' is not defined"
+}
 ```
 
-## Integration with Clawdbot Skills
+## Requirements
 
-AgentTasker works seamlessly with other Clawdbot skills:
-
-- data-scraper: Scrape multiple URLs in parallel
-- data-pipeline: Orchestrate complex workflows
-- Notion: Write results to databases in parallel
-- GitHub: Create issues/PRs in parallel
-
-## Examples
-
-See the `examples/` directory for complete working examples:
-
-- `concurrent_api_calls.py` - Make multiple API requests
-- `parallel_file_processing.py` - Process multiple files
-- `web_scraping_parallel.py` - Scrape multiple websites
-- `email_broadcast.py` - Send emails in parallel
+- Python 3.10+
+- MCP SDK (`pip install mcp`)
+- No other dependencies (uses Python standard library)
 
 ## License
 
 MIT License - See LICENSE file
 
-## Support
-
-For issues or questions, refer to Clawdbot documentation or repository.
-
 ## Version History
 
-### 1.0.0 (2026-01-22)
-- Initial release
-- Full task execution capabilities
-- Worker pool management
-- Result aggregation
-- Error handling
+- **2.0.0** - MCP server implementation, universal AI agent support
+- **1.0.0** - Original Python library
