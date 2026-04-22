@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tasker-mcp-server"
-version = "2.7.0"
+version = "1.0.0"
 description = "Minimal stdio MCP server for parallel task execution by AI agents"
 readme = "README.md"
 requires-python = ">=3.10"

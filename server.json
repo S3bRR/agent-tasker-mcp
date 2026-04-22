@@ -3,12 +3,16 @@
   "name": "io.github.s3brr/agent-tasker-mcp",
   "title": "AgentTasker MCP Server",
   "description": "Minimal stdio MCP server for parallel task execution by AI agents.",
-  "version": "2.7.0",
+  "repository": {
+    "url": "https://github.com/S3bRR/agent-tasker-mcp",
+    "source": "github"
+  },
+  "version": "1.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "agent-tasker-mcp-server",
-      "version": "2.7.0",
+      "version": "1.0.0",
       "transport": {
         "type": "stdio"
       }

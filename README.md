@@ -2,16 +2,31 @@
 
 <!-- mcp-name: io.github.s3brr/agent-tasker-mcp -->
 
-AgentTasker is a minimal stdio MCP server for AI agents that need to run tasks in parallel and get structured results back in one call.
+AgentTasker is a small, stdio-only MCP server for AI agents that need to run multiple tasks quickly and get structured results back in one call.
+
+It is intentionally narrow:
+
+- two tools: `execute` and `execute_batch`
+- local stdio transport only
+- zero third-party runtime dependencies
+- explicit dependency control with `depends_on`
+- compact, model-friendly JSON responses
 
 Repository: `https://github.com/S3bRR/agent-tasker-mcp`
 
-## What It Exposes
+## Why This Exists
 
-- `execute`: run one task immediately
-- `execute_batch`: run one or more tasks concurrently, with optional `depends_on`
+Most agent orchestration layers are heavier than they need to be. This project is designed for the common case:
 
-Supported task types:
+- run a few tasks in parallel
+- let one task wait on another when needed
+- keep the MCP surface small enough for models to use reliably
+
+There is no queue service, no persistence layer, no background worker system, and no SDK dependency required at runtime.
+
+## What It Supports
+
+Task types:
 
 - `python_code`
 - `http_request`
@@ -21,17 +36,22 @@ Supported task types:
 - `file_read`
 - `file_write`
 
+Public MCP tools:
+
+- `execute`
+- `execute_batch`
+
 ## Install
 
 ### Recommended: `uvx`
 
-After publishing to PyPI, this is the standard client path:
+After publishing to PyPI:
 
 ```bash
 uvx agent-tasker-mcp-server --workers 8
 ```
 
-If you are running directly from source before a PyPI release:
+Until then, run directly from GitHub:
 
 ```bash
 uvx --from git+https://github.com/S3bRR/agent-tasker-mcp.git agent-tasker-mcp-server --workers 8
@@ -45,7 +65,7 @@ After publishing to PyPI:
 pipx install agent-tasker-mcp-server
 ```
 
-From source today:
+Until then:
 
 ```bash
 pipx install git+https://github.com/S3bRR/agent-tasker-mcp.git
@@ -59,11 +79,9 @@ cd agent-tasker-mcp
 ./setup.sh
 ```
 
-`setup.sh` creates a local `.venv` and installs the package with no third-party runtime dependencies.
+## MCP Client Configuration
 
-## MCP Client Config
-
-### Standard published package
+### Published package
 
 ```json
 {
@@ -72,7 +90,7 @@ cd agent-tasker-mcp
 }
 ```
 
-### Source checkout via `uvx`
+### GitHub source
 
 ```json
 {
@@ -87,7 +105,7 @@ cd agent-tasker-mcp
 }
 ```
 
-### Local clone
+### Local checkout
 
 ```json
 {
@@ -96,15 +114,11 @@ cd agent-tasker-mcp
 }
 ```
 
-## Quick Sanity Check
+## Usage
 
-After connecting the server, ask your model:
+### `execute`
 
-```text
-Use the agent-tasker MCP. Call execute_batch with two python_code tasks returning 1 and 2, then show the results.
-```
-
-## Minimal `execute` Example
+Run one task immediately.
 
 ```json
 {
@@ -113,41 +127,93 @@ Use the agent-tasker MCP. Call execute_batch with two python_code tasks returnin
 }
 ```
 
-## Minimal `execute_batch` Example
+### `execute_batch`
+
+Run multiple tasks concurrently.
 
 ```json
 {
   "tasks": [
-    {"name": "fetch_users", "task_type": "http_request", "url": "https://api.example.com/users"},
-    {"name": "calc", "task_type": "python_code", "code": "result = 6 * 7"},
-    {"name": "read_after_write", "task_type": "file_read", "path": "/tmp/example.txt", "depends_on": ["calc"]}
+    {
+      "name": "fetch_users",
+      "task_type": "http_request",
+      "url": "https://api.example.com/users"
+    },
+    {
+      "name": "calc",
+      "task_type": "python_code",
+      "code": "result = 6 * 7"
+    }
   ],
   "output_mode": "compact"
 }
 ```
 
-`output_mode` defaults to `compact`. Use `full` only when the model needs full HTTP bodies or full extracted page text.
+### `depends_on`
 
-## MCP Registry Metadata
+If one task must wait for another, make it explicit.
 
-This repo includes [server.json](./server.json) for MCP Registry publication. To publish cleanly:
+```json
+{
+  "tasks": [
+    {
+      "name": "write_file",
+      "task_type": "file_write",
+      "path": "/tmp/example.txt",
+      "content": "hello"
+    },
+    {
+      "name": "read_file",
+      "task_type": "file_read",
+      "path": "/tmp/example.txt",
+      "depends_on": ["write_file"]
+    }
+  ]
+}
+```
 
-1. Publish `agent-tasker-mcp-server` to PyPI.
-2. Keep the PyPI package version and `server.json` version identical.
-3. Keep the README `mcp-name` marker aligned with `server.json`.
+If an upstream dependency fails, downstream tasks are marked failed and do not run.
 
-## Environment Limits
+## Output Shape
 
-- `AGENT_TASKER_MAX_TASKS`: max tasks per `execute_batch`
-- `AGENT_TASKER_MAX_PAYLOAD_BYTES`: max payload size per task
-- `AGENT_TASKER_MAX_MEMORY_MB`: process memory guard
+`output_mode` supports:
 
-## Local Development
+- `compact` (default)
+- `full`
+
+The response is ordered to match the input task list, which makes it easier for models to consume without extra reconciliation logic.
+
+## Limits
+
+Optional environment variables:
+
+- `AGENT_TASKER_MAX_TASKS`: maximum tasks per `execute_batch`
+- `AGENT_TASKER_MAX_PAYLOAD_BYTES`: maximum payload size per task
+- `AGENT_TASKER_MAX_MEMORY_MB`: soft process memory guard
+
+## Security Notes
+
+This server is intended for trusted environments.
+
+- `python_code` executes Python code
+- `shell_command` executes shell commands
+- `file_read` and `file_write` operate on the local filesystem
+
+Do not expose this server directly to untrusted users.
+
+## Development
+
+Create a local environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install .
+```
+
+Run the server:
+
+```bash
 agent-tasker-mcp-server --workers 4
 ```
 
@@ -157,6 +223,16 @@ Run tests:
 .venv/bin/python -m unittest discover -s tests
 ```
 
+## Packaging
+
+This repo includes [server.json](./server.json) for MCP Registry publication.
+
+The intended public release model is:
+
+1. publish `agent-tasker-mcp-server` to PyPI
+2. keep the package version and `server.json` version identical
+3. publish the MCP metadata to the MCP Registry
+
 ## License
 
-MIT (`LICENSE`)
+MIT
