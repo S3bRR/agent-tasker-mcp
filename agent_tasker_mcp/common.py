@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import json
 import re
-import textwrap
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -175,6 +175,8 @@ def fallback_html_extract(base_url: str, html: str, *, max_links: int = 50, link
     links: List[Dict[str, str]] = []
     seen = set()
     for match in _LINK_RE.finditer(html):
+        if len(links) >= max_links:
+            break
         href = (match.group(1) or match.group(2) or "").strip()
         if not href:
             continue
@@ -188,8 +190,6 @@ def fallback_html_extract(base_url: str, html: str, *, max_links: int = 50, link
             continue
         links.append({"url": url, "text": _strip_tags(match.group(3) or "") or url})
         seen.add(url)
-        if len(links) >= max_links:
-            break
     text = _strip_tags(_SCRIPT_STYLE_RE.sub(" ", html))
     return {
         "title": _strip_tags(title_match.group(1)) if title_match else None,
@@ -198,80 +198,47 @@ def fallback_html_extract(base_url: str, html: str, *, max_links: int = 50, link
     }
 
 
-PYTHON_EXECUTION_RUNNER = textwrap.dedent(
-    """
-    import builtins, contextlib, io, json, sys, time
-    from datetime import datetime
-    from pathlib import Path
-
-    safe = {name: getattr(builtins, name) for name in (
-        "abs all any ascii bin bool bytearray bytes callable chr dict dir divmod "
-        "enumerate filter float format frozenset getattr hasattr hash hex id int "
-        "isinstance issubclass iter len list map max min next object oct ord pow "
-        "print range repr reversed round set slice sorted str sum tuple type zip"
-    ).split()}
-    safe.update({"json": json, "time": time, "datetime": datetime, "Path": Path, "__import__": __import__})
-    namespace = {"__builtins__": safe, "result": None}
+def _duplicate_text(item: Dict[str, Any], structured: Any) -> bool:
+    if item.get("type") != "text":
+        return False
     try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            exec(compile(sys.stdin.read(), "<agent-tasker-python>", "exec"), namespace)
-    except Exception:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-    json.dump({"result": namespace.get("result")}, sys.stdout, default=str)
-    """
-)
+        return json.loads(item.get("text", "")) == structured
+    except (ValueError, TypeError):
+        return False
 
 
-def _preview(value: str, limit: int) -> str:
-    return value[:limit] + "..." if len(value) > limit else value
+def compact_task_result(task: Dict[str, Any]) -> Dict[str, Any]:
+    compact = {key: task[key] for key in ("name", "status", "error") if task.get(key) is not None}
+    result = task.get("result")
+    if isinstance(result, dict) and task["task_type"] == "discovery_search":
+        compact["result"] = {"results": [{key: value for key, value in item.items() if key not in {"score", "domain"} and value is not None} for item in result["results"]]}
+        failures = [status for status in result["provider_statuses"] if status["status"] != "ok"]
+        if failures:
+            compact["result"]["provider_errors"] = failures
+    elif isinstance(result, dict) and task["task_type"] == "web_scrape":
+        compact["result"] = {key: result[key] for key in ("final_url", "title", "text", "links", "js_rendered_warning") if result.get(key)}
+        # Preserve useful text, but signal any truncation explicitly.
+        if len(result.get("text", "")) > 2000:
+            compact["result"]["text"] = result["text"][:2000]
+        if len(result.get("text", "")) > 2000 or result.get("text_truncated") or result.get("body_truncated"):
+            compact["result"]["truncated"] = True
+    elif isinstance(result, dict) and "structuredContent" in result:
+        compact["result"] = {"structuredContent": result["structuredContent"]}
+        extra_content = [item for item in result.get("content", []) if not _duplicate_text(item, result["structuredContent"])]
+        if extra_content:
+            compact["result"]["content"] = extra_content
+        if result.get("isError"):
+            compact["result"]["isError"] = True
+    elif result is not None:
+        compact["result"] = result
+    return compact
 
 
-def _compact_result(task_type: str, result: Dict[str, Any]) -> Dict[str, Any]:
-    if task_type == "web_scrape":
-        text = result.get("text", "")
-        compacted = {
-            "url": result.get("url"),
-            "final_url": result.get("final_url"),
-            "status_code": result.get("status_code"),
-            "title": result.get("title"),
-            "meta_description": result.get("meta_description"),
-            "text_preview": _preview(text, 500),
-            "text_length": len(text),
-            "text_truncated": result.get("text_truncated"),
-            "headings": result.get("headings"),
-            "links": result.get("links"),
-            "link_count": result.get("link_count"),
-        }
-        if "js_rendered_warning" in result:
-            compacted["js_rendered_warning"] = result["js_rendered_warning"]
-        return compacted
-    if task_type == "http_request":
-        body = result.get("body", "")
-        return {
-            "status_code": result.get("status_code"),
-            "url": result.get("url"),
-            "headers": result.get("headers"),
-            "body_preview": _preview(body, 500),
-            "body_length": len(body),
-            "body_bytes": result.get("body_bytes"),
-            "body_truncated": result.get("body_truncated"),
-            "attempts": result.get("attempts"),
-        }
-    return result
-
-
-def compact_task_result(task_dict: Dict[str, Any]) -> Dict[str, Any]:
-    result = task_dict.get("result")
-    return task_dict if not isinstance(result, dict) else {**task_dict, "result": _compact_result(task_dict.get("task_type", ""), result)}
-
-
-def apply_output_mode(run_result: Dict[str, Any], output_mode: str) -> Dict[str, Any]:
+def apply_output_mode(raw: Dict[str, Any], output_mode: str) -> Dict[str, Any]:
     if output_mode == "full":
-        return run_result
-    return {
-        **run_result,
-        "results": [compact_task_result(task) for task in run_result.get("results", [])],
-        "output_mode": output_mode,
-    }
+        return raw
+    compact = {key: raw[key] for key in ("batch_id", "status", "error") if raw.get(key) is not None}
+    if "batch_id" in raw:
+        compact["progress"] = {"done": raw["completed"] + raw["failed"] + raw["cancelled"], "total": raw["total"]}
+    compact["results"] = [compact_task_result(task) for task in raw["results"] if task["status"] not in {"queued", "running"}]
+    return compact

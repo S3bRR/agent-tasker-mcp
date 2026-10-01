@@ -33,6 +33,22 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(package["registryType"], "pypi")
         self.assertEqual(package["transport"]["type"], "stdio")
 
+    def test_documented_examples_validate(self) -> None:
+        from agent_tasker_mcp.models import TaskType
+        from agent_tasker_mcp.registry import validate_payload
+        from agent_tasker_mcp.remote import validate_config
+
+        providers = json.loads((self.root / "examples/brave-providers.json").read_text())
+        validate_payload(TaskType.DISCOVERY_SEARCH, {"query": "test", "providers": providers})
+        remote = json.loads((self.root / "examples/fetch-mcp.json").read_text())
+        validate_config(remote["mcpServers"])
+        for filename in ("ten-searches.json", "five-mcp-calls.json"):
+            batch = json.loads((self.root / "examples" / filename).read_text())
+            for task in batch["tasks"]:
+                if task["task_type"] == "discovery_search":
+                    task["providers"] = providers
+                validate_payload(TaskType(task["task_type"]), task)
+
     def test_readme_has_mcp_registry_verification_marker(self) -> None:
         marker = f"mcp-name: {self.server_manifest['name']}"
         self.assertIn(marker, self.readme)

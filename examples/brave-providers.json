@@ -1,0 +1,17 @@
+[
+  {
+    "name": "brave",
+    "url_template": "https://api.search.brave.com/res/v1/web/search?q={query_encoded}&count={limit}",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "headers_env": {
+      "X-Subscription-Token": "BRAVE_SEARCH_API_KEY"
+    },
+    "items_path": "web.results",
+    "title_path": "title",
+    "url_path": "url",
+    "snippet_path": "description",
+    "requests_per_second": 1
+  }
+]

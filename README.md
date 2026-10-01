@@ -1,253 +1,94 @@
-# AgentTasker MCP Server
+# AgentTasker MCP
 
 <!-- mcp-name: io.github.S3bRR/agent-tasker-mcp -->
 
-AgentTasker is a small, stdio-only MCP server for AI agents that need to run multiple tasks quickly and get structured results back in one call.
+**Parallel searches and MCP tool calls for your coding agent.**
 
-It is intentionally narrow:
+Run ten searches or five calls to another MCP tool in one batch. Your agent picks concurrency up to your limit (default: **10**). Background batches, search caching, rate limiting, and compact results are built in.
 
-- two tools: `execute` and `execute_batch`
-- local stdio transport only
-- zero third-party runtime dependencies
-- explicit dependency control with `depends_on`
-- compact, model-friendly JSON responses
+Python 3.10+. **Zero third-party runtime dependencies.** Local stdio MCP transport.
 
-Repository: `https://github.com/S3bRR/agent-tasker-mcp`
+## Quick start
 
-## Why This Exists
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git, then pick your harness. `uvx` installs the server on first use; no clone needed.
 
-Most agent orchestration layers are heavier than they need to be. This project is designed for the common case:
-
-- run a few tasks in parallel
-- let one task wait on another when needed
-- keep the MCP surface small enough for models to use reliably
-
-There is no queue service, no persistence layer, no background worker system, and no SDK dependency required at runtime.
-
-## What It Supports
-
-Task types:
-
-- `python_code`
-- `http_request`
-- `discovery_search`
-- `web_scrape`
-- `shell_command`
-- `file_read`
-- `file_write`
-
-Public MCP tools:
-
-- `execute`
-- `execute_batch`
-
-## Install
-
-Requirements:
-
-- Python 3.10+
-- A local MCP client that can run stdio servers
-
-### Recommended: `uvx`
-
-Run directly from GitHub:
+### Claude Code
 
 ```bash
-uvx --from git+https://github.com/S3bRR/agent-tasker-mcp.git agent-tasker-mcp-server --workers 8
+claude mcp add --scope user --transport stdio agent-tasker -- uvx --from git+https://github.com/S3bRR/agent-tasker-mcp.git agent-tasker-mcp-server
 ```
 
-Once the package is live on PyPI, the command becomes:
+### Codex CLI / IDE extension
 
 ```bash
-uvx agent-tasker-mcp-server --workers 8
+codex mcp add agent-tasker -- uvx --from git+https://github.com/S3bRR/agent-tasker-mcp.git agent-tasker-mcp-server
 ```
 
-### `pipx`
+### Cursor / Claude Desktop / other JSON-based clients
 
-Install directly from GitHub:
+Merge this into your MCP config. Cursor uses `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project). Claude Desktop: **Settings → Developer → Edit Config**.
 
-```bash
-pipx install git+https://github.com/S3bRR/agent-tasker-mcp.git
+```json
+{
+  "mcpServers": {
+    "agent-tasker": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/S3bRR/agent-tasker-mcp.git", "agent-tasker-mcp-server"]
+    }
+  }
+}
 ```
 
-Once the package is live on PyPI, the command becomes:
+For Cursor, also add `"type": "stdio"` inside the `agent-tasker` entry.
 
-```bash
-pipx install agent-tasker-mcp-server
-```
+**VS Code / Copilot:** use `.vscode/mcp.json`, change `mcpServers` to `servers`, and add `"type": "stdio"` inside the entry. **OpenCode:** [copy-ready config](docs/setup.md#opencode).
 
-### Local clone
+Restart your harness and enable/trust the server if prompted. You should see **five tools**: `execute`, `execute_batch`, `get_batch`, `cancel_batch`, and `list_remote_tools`.
+
+> GUI app cannot find `uvx`? Set `command` to its full path (`command -v uvx` on macOS/Linux, `where.exe uvx` on Windows). First launch needs network access; increase your client's startup timeout if necessary.
+
+## Enable search or other MCP tools
+
+**Fetch webpages:** works immediately, without an API key. Try:
+
+> Use AgentTasker to fetch these five URLs in parallel and summarize them. Use a background batch if it might take a while.
+
+**Web search:** append `--search-provider brave` to the server arguments and supply `BRAVE_SEARCH_API_KEY` in your harness's server environment. No provider file needed. [Key setup and other providers →](docs/setup.md#web-search)
+
+> Use AgentTasker to run ten different searches about Python asyncio with concurrency 10, in the background. Poll for results and give me a concise summary.
+
+**Other MCP tools:** append `--mcp-config /absolute/path/to/servers.json`. Start from [this example](examples/fetch-mcp.json), then ask:
+
+> Use AgentTasker to call the fetch server's fetch tool for five URLs with concurrency 5.
+
+AgentTasker starts its **own configured stdio connections**; it cannot reuse your harness's existing MCP sessions. Remote tools are not cached or retried because they may have side effects. Provider quotas still apply; Brave's preset defaults to one request/second.
+
+## Prefer a local install?
+
+On macOS/Linux, with Python 3.10+:
 
 ```bash
 git clone https://github.com/S3bRR/agent-tasker-mcp.git
 cd agent-tasker-mcp
-./setup.sh
+./setup.sh --client cursor
 ```
 
-`setup.sh` creates a local `.venv`, installs this package into it, and prints an
-absolute MCP config snippet. If `python3 -m venv` is not available, it falls back
-to `virtualenv` when installed.
-
-## MCP Client Configuration
-
-### GitHub Source
-
-```json
-{
-  "command": "uvx",
-  "args": [
-    "--from",
-    "git+https://github.com/S3bRR/agent-tasker-mcp.git",
-    "agent-tasker-mcp-server",
-    "--workers",
-    "8"
-  ]
-}
-```
-
-### Installed Package
-
-```json
-{
-  "command": "agent-tasker-mcp-server",
-  "args": ["--workers", "8"]
-}
-```
-
-### Local checkout
-
-```json
-{
-  "command": "/absolute/path/to/agent-tasker-mcp/.venv/bin/agent-tasker-mcp-server",
-  "args": ["--workers", "8"]
-}
-```
-
-Use the exact absolute path printed by `./setup.sh` for local checkouts.
-
-## Usage
-
-### `execute`
-
-Run one task immediately.
-
-```json
-{
-  "task_type": "python_code",
-  "code": "result = 6 * 7"
-}
-```
-
-### `execute_batch`
-
-Run multiple tasks concurrently.
-
-```json
-{
-  "tasks": [
-    {
-      "name": "fetch_users",
-      "task_type": "http_request",
-      "url": "https://api.example.com/users"
-    },
-    {
-      "name": "calc",
-      "task_type": "python_code",
-      "code": "result = 6 * 7"
-    }
-  ],
-  "output_mode": "compact"
-}
-```
-
-### `depends_on`
-
-If one task must wait for another, make it explicit.
-
-```json
-{
-  "tasks": [
-    {
-      "name": "write_file",
-      "task_type": "file_write",
-      "path": "/tmp/example.txt",
-      "content": "hello"
-    },
-    {
-      "name": "read_file",
-      "task_type": "file_read",
-      "path": "/tmp/example.txt",
-      "depends_on": ["write_file"]
-    }
-  ]
-}
-```
-
-If an upstream dependency fails, downstream tasks are marked failed and do not run.
-
-## Output Shape
-
-`output_mode` supports:
-
-- `compact` (default)
-- `full`
-
-The response is ordered to match the input task list, which makes it easier for models to consume without extra reconciliation logic.
-
-## Release Process
-
-Releases are tag-driven.
-
-1. update `pyproject.toml` and `server.json` to the same version
-2. commit and push to `main`
-3. create and push a matching tag such as `v1.0.0`
-4. GitHub Actions runs tests, builds the package, publishes to PyPI through Trusted Publishing, and then publishes `server.json` to the MCP Registry
-
-The release workflow rejects version drift: the pushed tag, `pyproject.toml`, and `server.json` must match exactly.
-
-## Limits
-
-Optional environment variables:
-
-- `AGENT_TASKER_MAX_TASKS`: maximum tasks per `execute_batch`
-- `AGENT_TASKER_MAX_PAYLOAD_BYTES`: maximum payload size per task
-- `AGENT_TASKER_MAX_MEMORY_MB`: soft process memory guard
-
-## Security Notes
-
-This server is intended for trusted environments.
-
-- `python_code` executes Python code
-- `shell_command` executes shell commands
-- `file_read` and `file_write` operate on the local filesystem
-
-Do not expose this server directly to untrusted users.
-
-## Development
-
-Create a local environment:
+Replace `cursor` with `claude`, `codex`, `vscode`, `opencode`, or `generic`. The installer prints ready-to-paste config with absolute paths; it **never overwrites your settings**. Keep the checkout/virtual environment in place.
 
 ```bash
-./setup.sh
-source .venv/bin/activate
+# Include search or other MCP servers in the generated config:
+./setup.sh --client codex --search-provider brave --mcp-config /absolute/path/to/servers.json
+
+# Regenerate config later, without reinstalling:
+.venv/bin/agent-tasker-mcp-server --print-config vscode
 ```
 
-Run the server:
+[Windows installation and full harness setup →](docs/setup.md)
 
-```bash
-agent-tasker-mcp-server --workers 4
-```
+## Reference
 
-Run tests:
+- [Batch examples](examples/ten-searches.json) · [Repeated MCP calls](examples/five-mcp-calls.json)
+- [Tools, limits, caching, cancellation, and migration](docs/reference.md)
+- [MIT license](LICENSE)
 
-```bash
-.venv/bin/python -m unittest discover -s tests
-```
-
-## Packaging
-
-This repo includes [server.json](./server.json) for MCP Registry publication and a GitHub Actions workflow that publishes both the PyPI package and MCP metadata from a version tag.
-
-## License
-
-MIT
+Only connect servers you trust. Cancelling a batch skips queued work; already-running calls may finish. Background jobs and caches are process-local and disappear when the server restarts.

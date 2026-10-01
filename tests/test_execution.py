@@ -1,323 +1,179 @@
-from __future__ import annotations
-
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from io import BytesIO
 import json
-import tempfile
+import os
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
-from agent_tasker_mcp.executors.http import request_headers
+from agent_tasker_mcp.cache import SearchCache
+from agent_tasker_mcp.common import apply_output_mode
+from agent_tasker_mcp.executors.discovery import execute_discovery_search, render_provider_template
+from agent_tasker_mcp.executors.http import RateLimiter, decode_json_response, execute_http_request, execute_web_scrape, retry_after_seconds
 from agent_tasker_mcp.models import TaskType
-from agent_tasker_mcp.server import AgentTasker
-from agent_tasker_mcp.version import package_version
+from agent_tasker_mcp.registry import FIELDS, validate_payload
 
-
-class _Handler(BaseHTTPRequestHandler):
-    retry_count = 0
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path == "/json":
-            self._json({"ok": True, "path": parsed.path})
-            return
-        if parsed.path == "/retry":
-            type(self).retry_count += 1
-            if type(self).retry_count < 3:
-                self._json({"ok": False, "attempt": type(self).retry_count}, status=500)
-                return
-            self._json({"ok": True, "attempt": type(self).retry_count})
-            return
-        if parsed.path == "/large":
-            body = "x" * 64
-            encoded = body.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-            return
-        if parsed.path == "/search":
-            query = parse_qs(parsed.query)
-            q = query.get("q", [""])[0]
-            self._json({"items": [{"title": f"Result for {q}", "url": f"http://{self.headers['Host']}/page", "snippet": "Local result"}]})
-            return
-        if parsed.path == "/malformed":
-            encoded = b"<html><head><title>Broken<title></head><body><a href='/target'>Open link"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-            return
-        encoded = b"<html><head><title>Local Page</title><meta name='description' content='Local page'></head><body><h1>Hello</h1><p>Local body text.</p></body></html>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def log_message(self, format: str, *args) -> None:  # noqa: A003
-        return
-
-    def _json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+PROVIDER = {"name": "test", "url_template": "https://example.com/?q={query_encoded}", "items_path": "items", "title_path": "title", "url_path": "url", "snippet_path": "snippet"}
+RESULT = {"provider_statuses": [{"provider": "test", "status": "ok"}], "results": [{"title": "one", "url": "https://one.test", "sources": ["test"]}]}
 
 
 class ExecutionTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
+    def payload(self, **options):
+        return validate_payload(TaskType.DISCOVERY_SEARCH, {"query": "test", "providers": [PROVIDER], **options})
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.httpd.shutdown()
-        cls.thread.join(timeout=5)
-        cls.httpd.server_close()
+    def test_search_deduplicates_and_preserves_provider_failures(self):
+        providers = [PROVIDER, {**PROVIDER, "name": "second"}, {**PROVIDER, "name": "bad", "items_path": "missing"}]
+        response = {"status_code": 200, "body": '{"items": [{"title": "test", "url": "https://one.test", "snippet": "context"}]}'}
+        with patch("agent_tasker_mcp.executors.discovery.execute_http_request", return_value=response):
+            result = execute_discovery_search(self.payload(providers=providers))
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["sources"], ["test", "second"])
+        self.assertEqual(result["provider_statuses"][2]["status"], "failed")
+        compact = apply_output_mode({"status": "completed", "results": [{"name": "search", "task_type": "discovery_search", "status": "completed", "result": result}]}, "compact")
+        self.assertEqual(len(compact["results"][0]["result"]["provider_errors"]), 1)
+        self.assertNotIn("score", compact["results"][0]["result"]["results"][0])
 
-    def setUp(self) -> None:
-        _Handler.retry_count = 0
+    def test_templates_credentials_and_provider_validation(self):
+        query = 'a "quote" & café'
+        self.assertEqual(json.loads(render_provider_template('{{"query": {query_json}}}', query, 5))["query"], query)
+        provider = {**PROVIDER, "headers_env": {"X-Key": "TASKER_TEST_KEY"}}
+        response = {"status_code": 200, "body": '{"items": []}'}
+        with patch.dict(os.environ, {"TASKER_TEST_KEY": "secret"}), patch("agent_tasker_mcp.executors.discovery.execute_http_request", return_value=response) as request:
+            result = execute_discovery_search(self.payload(providers=[provider]))
+        self.assertEqual(request.call_args.args[0]["headers"]["X-Key"], "secret")
+        self.assertNotIn("secret", json.dumps(result))
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(RuntimeError, "Missing environment variable"):
+            execute_discovery_search(self.payload(providers=[provider]))
+        for update in ({"result_limit": 0}, {"headers_env": []}, {"requests_per_second": True}, {"url_template": "https://example.com/{unknown}"}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                self.payload(providers=[{**PROVIDER, **update}])
 
-    def test_execute_batch_preserves_input_order(self) -> None:
-        tasker = AgentTasker(max_workers=2)
-        result = tasker.execute_tasks(
-            [
-                ("slow", TaskType.PYTHON_CODE, {"code": "time.sleep(0.2)\nresult = 'slow'"}),
-                ("fast", TaskType.PYTHON_CODE, {"code": "result = 'fast'"}),
-            ]
-        )
-        self.assertEqual([task["name"] for task in result["results"]], ["slow", "fast"])
-
-    def test_http_request_retry_succeeds(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        result = tasker.execute_tasks([("retry", TaskType.HTTP_REQUEST, {"url": f"{root}/retry", "method": "GET", "timeout": 5})])
-        task = result["results"][0]
-        self.assertEqual(task["status"], "completed")
-        self.assertEqual(task["result"]["status_code"], 200)
-        self.assertEqual(task["result"]["attempts"], 3)
-
-    def test_default_http_user_agent_uses_package_version(self) -> None:
-        self.assertEqual(request_headers(None)["User-Agent"], f"agent-tasker-mcp-server/{package_version()}")
-
-    def test_http_request_body_limit_truncates(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        result = tasker.execute_tasks([("large", TaskType.HTTP_REQUEST, {"url": f"{root}/large", "max_body_bytes": 10, "timeout": 5})])
-        body = result["results"][0]["result"]["body"]
-        self.assertEqual(len(body), 10)
-        self.assertTrue(result["results"][0]["result"]["body_truncated"])
-
-    def test_compact_output_for_http_request(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        raw = tasker.execute_tasks([("http", TaskType.HTTP_REQUEST, {"url": f"{root}/json", "timeout": 5})])
-        compact = raw["results"][0]
-        from agent_tasker_mcp.common import apply_output_mode
-
-        formatted = apply_output_mode(raw, "compact")["results"][0]["result"]
-        self.assertIn("body_preview", formatted)
-        self.assertNotIn("body", formatted)
-        self.assertEqual(compact["result"]["status_code"], 200)
-
-    def test_full_output_for_http_request_keeps_body(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        raw = tasker.execute_tasks([("http", TaskType.HTTP_REQUEST, {"url": f"{root}/json", "timeout": 5})])
-        from agent_tasker_mcp.common import apply_output_mode
-
-        formatted = apply_output_mode(raw, "full")["results"][0]["result"]
-        self.assertIn("body", formatted)
-
-    def test_discovery_search_mixed_provider_statuses(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        providers = [
-            {
-                "name": "good",
-                "url_template": f"{root}/search?q={{query_encoded}}&limit={{limit}}",
-                "items_path": "items",
-                "title_path": "title",
-                "url_path": "url",
-                "snippet_path": "snippet",
-            },
-            {
-                "name": "bad",
-                "url_template": f"{root}/json",
-                "items_path": "missing.items",
-                "title_path": "title",
-                "url_path": "url",
-            },
-        ]
-        result = tasker.execute_tasks([("discover", TaskType.DISCOVERY_SEARCH, {"query": "agent tasker", "providers": providers, "max_results": 5, "timeout": 5})])
-        statuses = {status["provider"]: status["status"] for status in result["results"][0]["result"]["provider_statuses"]}
-        self.assertEqual(statuses["good"], "ok")
-        self.assertEqual(statuses["bad"], "failed")
-        self.assertEqual(result["results"][0]["result"]["returned_count"], 1)
-
-    def test_discovery_search_all_fail_marks_task_failed(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        providers = [
-            {
-                "name": "bad1",
-                "url_template": f"{root}/json",
-                "items_path": "missing.items",
-                "title_path": "title",
-                "url_path": "url",
-            },
-            {
-                "name": "bad2",
-                "url_template": f"{root}/json",
-                "items_path": "missing.items",
-                "title_path": "title",
-                "url_path": "url",
-            },
-        ]
-        result = tasker.execute_tasks([("discover", TaskType.DISCOVERY_SEARCH, {"query": "agent tasker", "providers": providers, "timeout": 5})])
-        self.assertEqual(result["results"][0]["status"], "failed")
-        self.assertIn("failed across all providers", result["results"][0]["error"])
-
-    def test_task_limit_raises(self) -> None:
-        tasker = AgentTasker(max_workers=1, max_tasks=1)
-        with self.assertRaises(RuntimeError):
-            tasker.execute_tasks(
-                [
-                    ("one", TaskType.PYTHON_CODE, {"code": "result = 1"}),
-                    ("two", TaskType.PYTHON_CODE, {"code": "result = 2"}),
-                ]
-            )
-
-    def test_payload_size_limit_raises(self) -> None:
-        tasker = AgentTasker(max_workers=1, max_payload_bytes=32)
-        with self.assertRaises(RuntimeError):
-            tasker.execute_tasks([("big", TaskType.PYTHON_CODE, {"code": "result = '" + ("x" * 100) + "'"})])
-
-    def test_web_scrape_handles_unclosed_link_at_eof(self) -> None:
-        root = f"http://127.0.0.1:{self.port}"
-        tasker = AgentTasker(max_workers=1)
-        result = tasker.execute_tasks([("scrape", TaskType.WEB_SCRAPE, {"url": f"{root}/malformed", "timeout": 5})])
-        task = result["results"][0]
-        self.assertEqual(task["status"], "completed")
-        self.assertEqual(task["result"]["title"], "Broken")
-        self.assertEqual(task["result"]["links"][0]["url"], f"{root}/target")
-
-    def test_invalid_web_scrape_regex_fails_validation(self) -> None:
-        tasker = AgentTasker(max_workers=1)
+    def test_manifest_defaults_and_invalid_field_types(self):
+        payload = self.payload()
+        self.assertEqual(payload["timeout"], FIELDS["timeout"]["default"])
+        self.assertEqual(payload["max_results"], FIELDS["max_results"]["default"])
+        for update in ({"max_results": True}, {"max_results": 0}, {"cache": "false"}, {"verify_ssl": "false"}, {"query": " "}, {"retry_backoff_seconds": float("nan")}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                self.payload(**update)
         with self.assertRaises(ValueError):
-            tasker.execute_tasks([("scrape", TaskType.WEB_SCRAPE, {"url": "http://example.com", "link_include_pattern": "(", "timeout": 5})])
+            validate_payload(TaskType.WEB_SCRAPE, {"url": "https://example.com", "link_include_pattern": "("})
 
-    def test_file_write_append_mode(self) -> None:
-        tmpdir = Path(tempfile.mkdtemp(prefix="agent_tasker_append_"))
-        target = tmpdir / "log.txt"
-        tasker = AgentTasker(max_workers=1)
-        tasker.execute_tasks([("write1", TaskType.FILE_WRITE, {"path": str(target), "content": "a", "mode": "w"})])
-        tasker.execute_tasks([("write2", TaskType.FILE_WRITE, {"path": str(target), "content": "b", "mode": "a"})])
-        result = tasker.execute_tasks([("read", TaskType.FILE_READ, {"path": str(target)})])
-        self.assertEqual(result["results"][0]["result"]["content"], "ab")
+    def test_cache_coalesces_inflight_and_isolates_result_objects(self):
+        cache = SearchCache()
+        started, release = threading.Event(), threading.Event()
+        calls = []
 
-    def test_same_batch_file_write_then_read_same_path_succeeds(self) -> None:
-        tmpdir = Path(tempfile.mkdtemp(prefix="agent_tasker_batch_file_"))
-        target = tmpdir / "data.txt"
-        tasker = AgentTasker(max_workers=4)
-        result = tasker.execute_tasks(
-            [
-                ("write", TaskType.FILE_WRITE, {"path": str(target), "content": "hello", "mode": "w"}),
-                ("read", TaskType.FILE_READ, {"path": str(target)}),
-            ]
-        )
-        ordered = {task["name"]: task for task in result["results"]}
-        self.assertEqual(ordered["write"]["status"], "completed")
-        self.assertEqual(ordered["read"]["status"], "completed")
-        self.assertEqual(ordered["read"]["result"]["content"], "hello")
+        def search(payload):
+            calls.append(payload)
+            started.set()
+            release.wait(5)
+            return deepcopy(RESULT)
 
-    def test_explicit_dependency_allows_cross_task_ordering(self) -> None:
-        tmpdir = Path(tempfile.mkdtemp(prefix="agent_tasker_dep_"))
-        target = tmpdir / "dep.txt"
-        tasker = AgentTasker(max_workers=4)
-        result = tasker.execute_tasks(
-            [
-                (
-                    "prepare",
-                    TaskType.PYTHON_CODE,
-                    {"code": f"from pathlib import Path\nPath({str(target)!r}).write_text('ready', encoding='utf-8')\nresult = 'ok'"},
-                ),
-                ("read", TaskType.FILE_READ, {"path": str(target)}, ["prepare"]),
-            ]
-        )
-        ordered = {task["name"]: task for task in result["results"]}
-        self.assertEqual(ordered["prepare"]["status"], "completed")
-        self.assertEqual(ordered["read"]["status"], "completed")
-        self.assertEqual(ordered["read"]["result"]["content"], "ready")
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(cache.run, self.payload(), search) for _ in range(5)]
+            self.assertTrue(started.wait(2))
+            release.set()
+            results = [future.result(2) for future in futures]
+        self.assertEqual(len(calls), 1)
+        results[0]["results"][0]["title"] = "changed"
+        self.assertEqual(results[1]["results"][0]["title"], "one")
+        self.assertEqual(cache.run(self.payload(), search)["results"][0]["title"], "one")
+        self.assertFalse(cache._pending)
 
-    def test_unknown_dependency_raises(self) -> None:
-        tasker = AgentTasker(max_workers=1)
-        with self.assertRaises(ValueError):
-            tasker.execute_tasks([("read", TaskType.FILE_READ, {"path": "/tmp/missing"}, ["missing_task"])])
+    def test_cache_fresh_bypass_and_failures_are_not_retained(self):
+        cache = SearchCache()
+        search = Mock(return_value=deepcopy(RESULT))
+        for _ in range(2):
+            cache.run(self.payload(), search)
+        self.assertEqual(search.call_count, 1)
+        for _ in range(2):
+            cache.run(self.payload(cache=False), search)
+        self.assertEqual(search.call_count, 3)
+        failed = Mock(side_effect=RuntimeError("failure"))
+        for _ in range(2):
+            with self.assertRaises(RuntimeError):
+                cache.run(self.payload(query="failed"), failed)
+        self.assertEqual(failed.call_count, 2)
+        partial = Mock(return_value={**RESULT, "provider_statuses": [{"status": "failed"}]})
+        for _ in range(2):
+            cache.run(self.payload(query="partial"), partial)
+        self.assertEqual(partial.call_count, 2)
 
-    def test_cyclic_dependencies_raise(self) -> None:
-        tasker = AgentTasker(max_workers=1)
-        with self.assertRaises(ValueError):
-            tasker.execute_tasks(
-                [
-                    ("one", TaskType.PYTHON_CODE, {"code": "result = 1"}, ["two"]),
-                    ("two", TaskType.PYTHON_CODE, {"code": "result = 2"}, ["one"]),
-                ]
-            )
+    def test_cache_ttl_lru_byte_bound_and_credentials(self):
+        cache = SearchCache(ttl_seconds=1, max_entries=1, max_bytes=1000)
+        search = Mock(return_value=deepcopy(RESULT))
+        cache.run(self.payload(query="one"), search)
+        cache.run(self.payload(query="two"), search)
+        cache.run(self.payload(query="one"), search)
+        self.assertEqual(search.call_count, 3)
+        with patch("agent_tasker_mcp.cache.time.monotonic", return_value=10**10):
+            cache.run(self.payload(query="one"), search)
+        self.assertEqual(search.call_count, 4)
+        oversized = SearchCache(max_bytes=1)
+        oversized.run(self.payload(), search)
+        self.assertFalse(oversized._cached)
+        payload = self.payload(providers=[{**PROVIDER, "headers_env": {"X-Key": "KEY"}}])
+        for value in ("first", "second"):
+            with patch.dict(os.environ, {"KEY": value}):
+                cache.run(payload, search)
+        self.assertEqual(search.call_count, 7)
 
-    def test_failed_dependency_blocks_downstream(self) -> None:
-        tasker = AgentTasker(max_workers=4)
-        result = tasker.execute_tasks(
-            [
-                ("fail", TaskType.PYTHON_CODE, {"code": "raise RuntimeError('boom')"}),
-                ("downstream", TaskType.PYTHON_CODE, {"code": "result = 'never'"}, ["fail"]),
-            ]
-        )
-        ordered = {task["name"]: task for task in result["results"]}
-        self.assertEqual(ordered["fail"]["status"], "failed")
-        self.assertEqual(ordered["downstream"]["status"], "failed")
-        self.assertIn("Blocked by failed dependencies: fail", ordered["downstream"]["error"])
+    def test_http_errors_and_truncated_json_are_not_empty_successes(self):
+        for response in ({"status_code": 429, "body": '{"items": []}'}, {"status_code": 200, "body": '{}', "body_truncated": True}):
+            with self.subTest(response=response), self.assertRaises(RuntimeError):
+                decode_json_response(response, "test")
+        with patch("agent_tasker_mcp.executors.http.execute_http_request", return_value={"status_code": 404}), self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+            execute_web_scrape({"url": "https://example.com"})
 
-    def test_shell_command_nonzero_exit_marks_task_failed(self) -> None:
-        tasker = AgentTasker(max_workers=1)
-        result = tasker.execute_tasks(
-            [
-                (
-                    "shell_fail",
-                    TaskType.SHELL_COMMAND,
-                    {"command": "printf 'bad output' >&2; exit 7", "timeout": 5},
-                )
-            ]
-        )
-        task = result["results"][0]
-        self.assertEqual(result["completed"], 0)
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(task["status"], "failed")
-        self.assertIsNone(task["result"])
-        self.assertIn("exit code 7", task["error"])
-        self.assertIn("bad output", task["error"])
+    def test_file_urls_are_not_a_backdoor_to_removed_file_read(self):
+        with self.assertRaisesRegex(ValueError, "HTTP"):
+            validate_payload(TaskType.WEB_SCRAPE, {"url": "file:///etc/passwd"})
+        with self.assertRaisesRegex(ValueError, "HTTP"):
+            self.payload(providers=[{**PROVIDER, "url_template": "file:///tmp/search.json"}])
+        with patch("agent_tasker_mcp.executors.http.urllib.request.urlopen") as fetch, self.assertRaisesRegex(ValueError, "HTTP"):
+            execute_web_scrape({"url": "file:///etc/passwd"})
+        fetch.assert_not_called()
 
-    def test_failed_shell_command_blocks_downstream_dependency(self) -> None:
-        tasker = AgentTasker(max_workers=4)
-        result = tasker.execute_tasks(
-            [
-                ("shell_fail", TaskType.SHELL_COMMAND, {"command": "exit 7", "timeout": 5}),
-                ("dependent", TaskType.PYTHON_CODE, {"code": "result = 'ran'"}, ["shell_fail"]),
-            ]
-        )
-        ordered = {task["name"]: task for task in result["results"]}
-        self.assertEqual(result["completed"], 0)
-        self.assertEqual(result["failed"], 2)
-        self.assertEqual(ordered["shell_fail"]["status"], "failed")
-        self.assertEqual(ordered["dependent"]["status"], "failed")
-        self.assertIsNone(ordered["dependent"]["result"])
-        self.assertIn("Blocked by failed dependencies: shell_fail", ordered["dependent"]["error"])
+    def test_compact_page_text_is_explicitly_truncated(self):
+        raw = {"status": "completed", "results": [{"name": "page", "task_type": "web_scrape", "status": "completed", "result": {"text": "x" * 3000}}]}
+        compact = apply_output_mode(raw, "compact")["results"][0]["result"]
+        self.assertEqual(len(compact["text"]), 2000)
+        self.assertTrue(compact["truncated"])
+        self.assertIs(apply_output_mode(raw, "full"), raw)
+
+    def test_rate_spacing_retry_after_and_shared_cooldown(self):
+        now, sleeps, calls = [0.0], [], []
+
+        def sleep(delay):
+            sleeps.append(delay)
+            now[0] += delay
+
+        class Response(BytesIO):
+            status, headers, url = 200, {}, "https://example.com"
+
+        def fetch(*args, **kwargs):
+            calls.append(now[0])
+            if len(calls) == 1:
+                raise HTTPError("https://example.com", 429, "slow", {"Retry-After": "3"}, BytesIO(b"error"))
+            return Response(b'{}')
+
+        limiter = RateLimiter()
+        with patch("agent_tasker_mcp.executors.http.time.monotonic", side_effect=lambda: now[0]), patch("agent_tasker_mcp.executors.http.time.sleep", side_effect=sleep), patch("agent_tasker_mcp.executors.http.urllib.request.urlopen", side_effect=fetch):
+            result = execute_http_request({"url": "https://example.com", "timeout": 10}, limiter=limiter, rate_key="provider", requests_per_second=1)
+            limiter.wait("provider", 1, 10)
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(calls, [0, 3])
+        self.assertEqual(sleeps, [3, 1])
+        self.assertEqual(retry_after_seconds("bad date"), None)
+        self.assertEqual(retry_after_seconds("Wed, 01 Jan 2020 00:00:00 GMT"), 0)
+
+    def test_long_retry_after_fails_instead_of_retrying_early(self):
+        error = HTTPError("https://example.com", 429, "slow", {"Retry-After": "1000"}, BytesIO(b"error"))
+        limiter = RateLimiter()
+        with patch("agent_tasker_mcp.executors.http.urllib.request.urlopen", side_effect=error) as fetch, self.assertRaisesRegex(RuntimeError, "timeout"):
+            execute_http_request({"url": "https://example.com", "timeout": 1}, limiter=limiter, rate_key="provider")
+        self.assertEqual(fetch.call_count, 1)
+        with self.assertRaisesRegex(RuntimeError, "timeout"):
+            limiter.wait("provider", None, 0)

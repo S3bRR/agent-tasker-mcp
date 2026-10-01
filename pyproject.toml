@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tasker-mcp-server"
-version = "1.0.1"
-description = "Minimal stdio MCP server for parallel task execution by AI agents"
+version = "2.0.0"
+description = "Lightweight MCP server for parallel searches and configured MCP tools"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -33,6 +33,9 @@ keywords = [
   "parallel",
   "automation"
 ]
+
+[project.optional-dependencies]
+test = ["mcp>=1.30,<2", "jsonschema>=4.23,<5"]
 
 [project.urls]
 Homepage = "https://github.com/S3bRR/agent-tasker-mcp"

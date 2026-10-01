@@ -1,0 +1,11 @@
+{
+  "wait": false,
+  "concurrency": 5,
+  "tasks": [
+    {"name": "asyncio", "task_type": "mcp_tool", "server": "fetch", "tool": "fetch", "arguments": {"url": "https://docs.python.org/3/library/asyncio.html", "max_length": 2000}},
+    {"name": "futures", "task_type": "mcp_tool", "server": "fetch", "tool": "fetch", "arguments": {"url": "https://docs.python.org/3/library/concurrent.futures.html", "max_length": 2000}},
+    {"name": "threads", "task_type": "mcp_tool", "server": "fetch", "tool": "fetch", "arguments": {"url": "https://docs.python.org/3/library/threading.html", "max_length": 2000}},
+    {"name": "queues", "task_type": "mcp_tool", "server": "fetch", "tool": "fetch", "arguments": {"url": "https://docs.python.org/3/library/queue.html", "max_length": 2000}},
+    {"name": "testing", "task_type": "mcp_tool", "server": "fetch", "tool": "fetch", "arguments": {"url": "https://docs.python.org/3/library/unittest.html", "max_length": 2000}}
+  ]
+}

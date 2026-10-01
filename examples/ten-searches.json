@@ -1,0 +1,17 @@
+{
+  "wait": false,
+  "concurrency": 10,
+  "output_mode": "compact",
+  "tasks": [
+    {"name": "overview", "task_type": "discovery_search", "query": "Python asyncio overview"},
+    {"name": "task-groups", "task_type": "discovery_search", "query": "Python asyncio TaskGroup documentation"},
+    {"name": "cancellation", "task_type": "discovery_search", "query": "Python asyncio cancellation best practices"},
+    {"name": "timeouts", "task_type": "discovery_search", "query": "Python asyncio timeout documentation"},
+    {"name": "semaphores", "task_type": "discovery_search", "query": "Python asyncio Semaphore concurrency limits"},
+    {"name": "queues", "task_type": "discovery_search", "query": "Python asyncio Queue backpressure"},
+    {"name": "threads", "task_type": "discovery_search", "query": "Python asyncio to_thread blocking IO"},
+    {"name": "exceptions", "task_type": "discovery_search", "query": "Python asyncio ExceptionGroup handling"},
+    {"name": "debugging", "task_type": "discovery_search", "query": "Python asyncio debug mode documentation"},
+    {"name": "testing", "task_type": "discovery_search", "query": "Python unittest IsolatedAsyncioTestCase documentation"}
+  ]
+}
