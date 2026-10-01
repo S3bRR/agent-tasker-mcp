@@ -14,7 +14,7 @@ try:
 except ImportError:
     tomllib = None
 
-from agent_tasker_mcp.configuration import CLIENTS, SEARCH_PROVIDERS, render_config, server_args
+from agent_tasker_mcp.configuration import CLIENTS, SEARCH_PROVIDERS, render_config, search_providers, server_args
 from agent_tasker_mcp.models import DEFAULT_MAX_WORKERS
 from agent_tasker_mcp.server import main
 
@@ -78,13 +78,36 @@ class ConfigurationTests(unittest.TestCase):
                 patch("agent_tasker_mcp.server.create_server") as server, \
                 patch("agent_tasker_mcp.server.Path.read_text", side_effect=AssertionError("must not read file")):
             self.assertEqual(main(["--search-provider", "brave"]), 0)
-        server.assert_called_once_with(DEFAULT_MAX_WORKERS, SEARCH_PROVIDERS["brave"], {})
+        server.assert_called_once_with(DEFAULT_MAX_WORKERS, SEARCH_PROVIDERS["brave"], {}, reader_fallback="none")
         server.return_value.serve_stdio.assert_called_once_with()
+
+    def test_searxng_and_reader_options_reach_every_generated_client(self):
+        for client in CLIENTS:
+            with self.subTest(client=client), patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(io.StringIO()) as output, \
+                    patch("agent_tasker_mcp.server.create_server", side_effect=AssertionError("must not start")):
+                self.assertEqual(main(["--print-config", client, "--search-provider", "searxng", "--searxng-url",
+                                       "https://search.example/base", "--reader-fallback", "jina"]), 0)
+                printed = output.getvalue()
+                self.assertIn("--search-provider", printed)
+                self.assertIn("--searxng-url", printed)
+                self.assertIn("--reader-fallback", printed)
+                self.assertNotIn("API_KEY", printed)
+                if client == "codex" and tomllib:
+                    tomllib.loads(printed)
+                elif client != "codex":
+                    json.loads(printed)
+
+    def test_searxng_and_reader_options_reach_startup(self):
+        with patch.dict(os.environ, {}, clear=True), patch("agent_tasker_mcp.server.create_server") as server:
+            self.assertEqual(main(["--search-provider", "searxng", "--searxng-url", "http://localhost:9090/base", "--reader-fallback", "jina"]), 0)
+        server.assert_called_once_with(DEFAULT_MAX_WORKERS, search_providers("searxng", "http://localhost:9090/base"), {}, reader_fallback="jina")
 
     def test_invalid_options_fail_before_startup(self):
         for args in (["--print-config", "unknown"], ["--print-config", "cursor", "--workers", "0"],
                      ["--search-provider", "brave", "--providers-file", "providers.json"],
-                     ["--search-provider", "unknown"]):
+                     ["--search-provider", "unknown"], ["--searxng-url", "https://example.com"],
+                     ["--print-config", "cursor", "--search-provider", "searxng", "--searxng-url", "file:///tmp"],
+                     ["--reader-fallback", "unknown"]):
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), \
                     patch("agent_tasker_mcp.server.AgentTasker", side_effect=AssertionError("must not start")):
                 with self.assertRaises(SystemExit) as raised:
@@ -94,7 +117,8 @@ class ConfigurationTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash"), "bash is not installed")
     def test_setup_rejects_invalid_options_before_installation(self):
         for args in (["--client", "unknown"], ["--client"], ["--search-provider", "unknown"],
-                     ["--search-provider", "brave", "--providers-file", "providers.json"]):
+                     ["--search-provider", "brave", "--providers-file", "providers.json"],
+                     ["--reader-fallback", "unknown"], ["--searxng-url", "https://example.com"]):
             with self.subTest(args=args):
                 result = subprocess.run(["bash", str(ROOT / "setup.sh"), *args], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1)

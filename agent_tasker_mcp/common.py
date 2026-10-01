@@ -51,7 +51,7 @@ class HTMLContentExtractor(HTMLParser):
                 content = self._clean_text(attr_map.get("content") or "")
                 if content:
                     self.meta_description = content
-        elif tag == "a" and attr_map.get("href"):
+        elif tag == "a" and attr_map.get("href") and len(self.links) < self.max_links:
             self.current_link_href = attr_map["href"]
             self.current_link_text = []
         elif tag in self._HEADING_TAGS:
@@ -107,9 +107,10 @@ class HTMLContentExtractor(HTMLParser):
             self.current_heading_text.append(cleaned)
 
     def extract(self, max_text_chars: int = 20000) -> Dict[str, Any]:
-        title = _strip_tags(" ".join(self.title_parts)) or None
-        text = _strip_tags(" ".join(self.text_parts))
-        truncated = len(text) > max_text_chars
+        title = self._clean_text(" ".join(self.title_parts)) or None
+        text = self._clean_text(" ".join(self.text_parts))
+        text_length = len(text)
+        truncated = text_length > max_text_chars
         if truncated:
             text = text[:max_text_chars].rstrip()
         result = {
@@ -120,13 +121,46 @@ class HTMLContentExtractor(HTMLParser):
             "headings": self.headings,
             "links": self.links,
         }
-        if self.script_tag_count > 5 and len(text) < 200:
+        if self.script_tag_count and text_length < 200:
             result["js_rendered_warning"] = (
-                f"Page returned minimal text ({len(text)} chars) with {self.script_tag_count} "
+                f"Page returned minimal text ({text_length} chars) with {self.script_tag_count} "
                 "script tags — likely requires JavaScript rendering. Consider using an API "
                 "endpoint or a JS-capable scraper instead."
             )
         return result
+
+
+def extract_text_content(base_url: str, text: str, *, markdown=False, max_text_chars=20000, max_links=50, link_include_pattern=None) -> dict:
+    """Preserve text/code verbatim; recognize basic Markdown headings and links."""
+    headings, links, seen = [], [], set()
+    link_re = re.compile(link_include_pattern) if link_include_pattern else None
+    fence = None
+    if markdown:
+        for line in text.splitlines():
+            marker = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+            if marker:
+                run = marker[1]
+                if fence is None:
+                    fence = run
+                elif run[0] == fence[0] and len(run) >= len(fence):
+                    fence = None
+                continue
+            if fence:
+                continue
+            heading = re.match(r"^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$", line)
+            if heading and len(headings) < 100:
+                headings.append({"level": f"h{len(heading[1])}", "text": heading[2]})
+            if len(links) >= max_links:
+                continue
+            for match in re.finditer(r"(?<!!)\[([^\]\n]*)\]\((<?[^\s)]+>?)(?:\s+\"[^\"]*\")?\)", line):
+                url = urldefrag(urljoin(base_url, match[2].strip("<>")))[0]
+                if (len(links) < max_links and url not in seen and urlparse(url).scheme in {"http", "https"}
+                        and (link_re is None or link_re.search(url))):
+                    links.append({"url": url, "text": match[1] or url})
+                    seen.add(url)
+    return {"title": headings[0]["text"] if headings else None, "meta_description": None,
+            "text": text[:max_text_chars].rstrip(), "text_truncated": len(text) > max_text_chars,
+            "headings": headings, "links": links}
 
 
 def normalize_text(value: Optional[str]) -> str:
@@ -216,7 +250,7 @@ def compact_task_result(task: Dict[str, Any]) -> Dict[str, Any]:
         if failures:
             compact["result"]["provider_errors"] = failures
     elif isinstance(result, dict) and task["task_type"] == "web_scrape":
-        compact["result"] = {key: result[key] for key in ("final_url", "title", "text", "links", "js_rendered_warning") if result.get(key)}
+        compact["result"] = {key: result[key] for key in ("final_url", "title", "text", "links", "source", "extraction", "reader_error", "fallback_reason", "js_rendered_warning") if result.get(key)}
         # Preserve useful text, but signal any truncation explicitly.
         if len(result.get("text", "")) > 2000:
             compact["result"]["text"] = result["text"][:2000]

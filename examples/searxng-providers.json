@@ -1,0 +1,12 @@
+[
+  {
+    "name": "searxng",
+    "url_template": "http://localhost:8080/search?q={query_encoded}&format=json",
+    "items_path": "results",
+    "title_path": "title",
+    "url_path": "url",
+    "snippet_path": "content",
+    "errors_path": "unresponsive_engines",
+    "requests_per_second": 1
+  }
+]

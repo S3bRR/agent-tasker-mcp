@@ -14,7 +14,7 @@ from email.utils import parsedate_to_datetime
 from threading import Lock
 from typing import Any, Dict, Optional
 
-from ..common import HTMLContentExtractor, fallback_html_extract
+from ..common import HTMLContentExtractor, extract_text_content, fallback_html_extract
 from ..models import DEFAULT_MAX_BODY_BYTES, RETRYABLE_HTTP_STATUSES
 from ..version import package_version
 
@@ -159,68 +159,70 @@ def execute_http_request(payload: Dict[str, Any], *, limiter=None, rate_key=None
         time.sleep(delay)
 
 
-def execute_web_scrape(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Fetch a webpage and extract lightweight visible content."""
-    response = execute_http_request(
-        {
-            "url": payload["url"],
-            "method": "GET",
-            "timeout": payload.get("timeout") or 30,
-            "verify_ssl": payload.get("verify_ssl", True),
-            "max_body_bytes": payload.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES),
-            "retries": payload.get("retries"),
-            "retry_backoff_seconds": payload.get("retry_backoff_seconds", 1),
-            "headers": {
-                "Accept": "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
-            },
-        }
-    )
+def _extract_page(response, payload, *, markdown=False):
+    body, url = response.get("body", ""), response.get("url", payload["url"])
+    content_type = next((value for key, value in response.get("headers", {}).items() if key.lower() == "content-type"), "")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    options = {"max_text_chars": payload.get("max_text_chars", 20000),
+               "max_links": payload.get("max_links", 50) if payload.get("extract_links", True) else 0,
+               "link_include_pattern": payload.get("link_include_pattern")}
+    if markdown or media_type in {"text/markdown", "text/x-markdown", "text/plain"}:
+        markdown = markdown or media_type != "text/plain"
+        extracted = extract_text_content(url, body, markdown=markdown, **options)
+        method = "markdown" if markdown else "text"
+    else:
+        parser = HTMLContentExtractor(url, max_links=options["max_links"], link_include_pattern=options["link_include_pattern"])
+        parser.feed(body)
+        parser.close()
+        if parser.current_link_href:
+            parser._close_link()
+        extracted = parser.extract(max_text_chars=options["max_text_chars"])
+        # Normal HTML already has decoded text/links; don't parse it twice.
+        if parser.in_title or not extracted["text"]:
+            fallback = fallback_html_extract(url, body, max_links=options["max_links"], link_include_pattern=options["link_include_pattern"])
+            extracted["title"] = fallback["title"] or extracted["title"]
+            if not extracted["text"]:
+                extracted["text"] = fallback["text"][:options["max_text_chars"]].rstrip()
+                extracted["text_truncated"] = len(fallback["text"]) > options["max_text_chars"]
+            if not extracted["links"]:
+                extracted["links"] = fallback["links"]
+        method = "html"
+    if not payload.get("extract_headings", True):
+        extracted["headings"] = []
+    result = {"url": payload["url"], "final_url": url, "status_code": response.get("status_code", 200),
+              "content_type": content_type, "body_truncated": response.get("body_truncated", False),
+              **extracted, "link_count": len(extracted["links"]), "source": "direct", "extraction": method}
+    if payload.get("include_html", False) and method == "html":
+        result["html"] = body[:options["max_text_chars"]]
+        result["html_truncated"] = len(body) > options["max_text_chars"]
+    return result
 
-    if response.get("status_code", 200) >= 400:
-        raise RuntimeError(f"Web scrape returned HTTP {response['status_code']}: {payload['url']}")
-    body = response.get("body", "")
-    content_type = response.get("headers", {}).get("Content-Type") or response.get("headers", {}).get("content-type") or ""
-    parser = HTMLContentExtractor(
-        response.get("url", payload["url"]),
-        max_links=payload.get("max_links", 50),
-        link_include_pattern=payload.get("link_include_pattern"),
-    )
-    parser.feed(body)
-    parser.close()
-    extracted = parser.extract(max_text_chars=payload.get("max_text_chars", 20000))
-    fallback = fallback_html_extract(
-        response.get("url", payload["url"]),
-        body,
-        max_links=payload.get("max_links", 50),
-        link_include_pattern=payload.get("link_include_pattern"),
-    )
-    extracted["title"] = fallback["title"] or extracted["title"]
-    if not extracted["text"]:
-        extracted["text"] = fallback["text"][: payload.get("max_text_chars", 20000)].rstrip()
-        extracted["text_truncated"] = len(fallback["text"]) > payload.get("max_text_chars", 20000)
-    if not extracted["links"]:
-        extracted["links"] = fallback["links"]
-    links = extracted["links"] if payload.get("extract_links", True) else []
-    headings = extracted["headings"] if payload.get("extract_headings", True) else []
 
-    result: Dict[str, Any] = {
-        "url": payload["url"],
-        "final_url": response.get("url", payload["url"]),
-        "status_code": response.get("status_code"),
-        "content_type": content_type,
-        "body_truncated": response.get("body_truncated", False),
-        "title": extracted["title"],
-        "meta_description": extracted["meta_description"],
-        "text": extracted["text"],
-        "text_truncated": extracted["text_truncated"],
-        "headings": headings,
-        "links": links,
-        "link_count": len(links),
-    }
-    if extracted.get("js_rendered_warning"):
-        result["js_rendered_warning"] = extracted["js_rendered_warning"]
-    if payload.get("include_html", False):
-        max_text_chars = payload.get("max_text_chars", 20000)
-        result["html"] = body[:max_text_chars]
-        result["html_truncated"] = len(body) > max_text_chars
+def execute_web_scrape(payload: Dict[str, Any], *, limiter=None) -> Dict[str, Any]:
+    """Markdown first, static extraction second, explicitly enabled hosted fallback last."""
+    deadline = time.monotonic() + (payload.get("timeout") or 30)
+    response = execute_http_request({**payload, "method": "GET", "body": None,
+        "headers": {"Accept": "text/markdown,text/html;q=0.9,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"}})
+    status = response.get("status_code", 200)
+    result = _extract_page(response, payload) if status < 400 else None
+    reason = "http_403" if status == 403 else "minimal_script_content" if result and result.get("js_rendered_warning") else None
+    if payload.get("reader_fallback") == "jina" and reason:
+        try:
+            from .reader import read_page  # No reader imports or DNS work on the direct-only path.
+            target = response.get("url", payload["url"])
+            data, reader_response = read_page(target, payload, fetch=execute_http_request, limiter=limiter, deadline=deadline)
+            final_url = data.get("url")
+            if not isinstance(final_url, str) or urlparse(final_url).scheme not in {"http", "https"} or not urlparse(final_url).netloc:
+                final_url = target
+            result = _extract_page({**reader_response, "url": final_url, "body": data["content"]}, payload, markdown=True)
+            for key, reader_key in (("title", "title"), ("meta_description", "description")):
+                if isinstance(data.get(reader_key), str) and data[reader_key]:
+                    result[key] = data[reader_key]
+            result.update(source="jina", extraction="markdown", content_type="text/markdown", fallback_reason=reason)
+        except Exception as exc:
+            if result is None:
+                raise RuntimeError(f"Web scrape returned HTTP {status}; Jina fallback failed: {exc}") from exc
+            result.update(reader_error=str(exc), fallback_reason=reason)
+    if result is None:
+        raise RuntimeError(f"Web scrape returned HTTP {status}: {payload['url']}")
     return result

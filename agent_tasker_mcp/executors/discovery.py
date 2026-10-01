@@ -13,7 +13,7 @@ def render_provider_template(template: str, query: str, limit: int) -> str:
 
 
 def _network_options(payload: dict) -> dict:
-    return {key: payload[key] for key in ("timeout", "retries", "retry_backoff_seconds", "verify_ssl", "max_body_bytes") if key in payload}
+    return {key: payload[key] for key in ("timeout", "retries", "retry_backoff_seconds", "verify_ssl", "max_body_bytes", "reader_fallback") if key in payload}
 
 
 def execute_discovery_search(payload: dict, *, limiter=None) -> dict:
@@ -36,7 +36,8 @@ def execute_discovery_search(payload: dict, *, limiter=None) -> dict:
                 "method": provider.get("method", "GET"), "headers": headers,
                 "body": render_provider_template(provider["body_template"], query, limit) if "body_template" in provider else None,
             }, limiter=limiter, rate_key=rate_key, requests_per_second=provider.get("requests_per_second"))
-            items = get_nested_value(decode_json_response(response, name), provider["items_path"])
+            data = decode_json_response(response, name)
+            items = get_nested_value(data, provider["items_path"])
             if not isinstance(items, list):
                 raise RuntimeError("items_path did not resolve to a list")
             count = 0
@@ -52,10 +53,12 @@ def execute_discovery_search(payload: dict, *, limiter=None) -> dict:
                     candidate["sources"].append(name)
                 if not candidate["snippet"] and isinstance(snippet, str):
                     candidate["snippet"] = snippet
-            statuses.append({"provider": name, "status": "ok", "candidates": count})
+            errors = get_nested_value(data, provider["errors_path"]) if "errors_path" in provider else None
+            statuses.append({"provider": name, "status": "partial" if errors else "ok", "candidates": count,
+                             **({"error": json.dumps(errors, ensure_ascii=False)} if errors else {})})
         except Exception as exc:
             statuses.append({"provider": name, "status": "failed", "error": str(exc)})
-    if all(status["status"] == "failed" for status in statuses):
+    if not merged and all(status["status"] != "ok" for status in statuses):
         raise RuntimeError("Search failed across all providers: " + "; ".join(f"{s['provider']}: {s['error']}" for s in statuses))
     tokens = set(tokenize_text(query))
     for candidate in merged.values():
@@ -66,8 +69,9 @@ def execute_discovery_search(payload: dict, *, limiter=None) -> dict:
     for candidate in results[:payload["fetch_top_results"]]:
         try:
             page = execute_web_scrape({**options, "url": candidate["url"], "max_text_chars": payload["fetch_max_chars"],
-                                      "max_links": 0, "extract_links": False, "extract_headings": False})
-            candidate["page_context"] = {key: page[key] for key in ("title", "meta_description", "text", "final_url", "status_code")}
+                                      "max_links": 0, "extract_links": False, "extract_headings": False}, limiter=limiter)
+            candidate["page_context"] = {key: page[key] for key in ("title", "meta_description", "text", "final_url", "status_code",
+                "source", "extraction", "text_truncated", "body_truncated", "reader_error", "fallback_reason", "js_rendered_warning") if key in page}
         except Exception as exc:
             candidate["page_context_error"] = str(exc)
     return {"query": query, "provider_statuses": statuses, "results": results}

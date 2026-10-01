@@ -21,6 +21,7 @@ PROVIDER_FIELDS = {
     "title_path": field("string", minLength=1),
     "url_path": field("string", minLength=1),
     "snippet_path": field("string"),
+    "errors_path": field("string", description="Optional dot path to upstream errors; partial results are returned but not cached"),
     "method": field("string", enum=sorted(ALLOWED_HTTP_METHODS), default="GET"),
     "headers": STRING_MAP,
     "headers_env": field("object", additionalProperties=field("string", minLength=1), description="Header names mapped to credential environment variables"),
@@ -36,6 +37,7 @@ FIELDS = {
     "fetch_top_results": field("integer", minimum=0, default=0),
     "fetch_max_chars": field("integer", minimum=1, default=4000),
     "cache": field("boolean", default=True, description="False bypasses both search caching and duplicate coalescing"),
+    "reader_fallback": field("string", enum=["none", "jina"], default="none", description="Optional hosted reader for minimal-script pages/HTTP 403; jina requires operator opt-in and shares public URLs with Jina"),
     "timeout": field("integer", minimum=1, default=30),
     "retries": field("integer", minimum=0),
     "retry_backoff_seconds": field("number", minimum=0, default=1),
@@ -55,8 +57,8 @@ FIELDS = {
 NETWORK_FIELDS = ("timeout", "retries", "retry_backoff_seconds", "verify_ssl", "max_body_bytes")
 # (fields, required fields): execution routes remain instance-owned, not duplicated here.
 TASK_SPECS = {
-    TaskType.DISCOVERY_SEARCH: (("query", "providers", "max_results", "fetch_top_results", "fetch_max_chars", "cache", *NETWORK_FIELDS), ("query", "providers")),
-    TaskType.WEB_SCRAPE: (("url", "max_links", "max_text_chars", "include_html", "extract_links", "extract_headings", "link_include_pattern", *NETWORK_FIELDS), ("url",)),
+    TaskType.DISCOVERY_SEARCH: (("query", "providers", "max_results", "fetch_top_results", "fetch_max_chars", "cache", "reader_fallback", *NETWORK_FIELDS), ("query", "providers")),
+    TaskType.WEB_SCRAPE: (("url", "max_links", "max_text_chars", "include_html", "extract_links", "extract_headings", "link_include_pattern", "reader_fallback", *NETWORK_FIELDS), ("url",)),
     TaskType.MCP_TOOL: (("server", "tool", "arguments", "timeout"), ("server", "tool")),
 }
 

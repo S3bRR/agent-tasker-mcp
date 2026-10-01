@@ -55,9 +55,30 @@ Merge into `opencode.json`:
 
 ## Web search
 
-Fetching webpages needs no API key. For search, obtain a [Brave Search API key](https://api-dashboard.search.brave.com/), append `--search-provider brave` to the server arguments, and make `BRAVE_SEARCH_API_KEY` available to the **server process**, not just your terminal.
+For **SearXNG**, add `--search-provider searxng --searxng-url http://localhost:8080` to the server arguments. The preset needs no API key, but you must run/provide an instance with JSON enabled. [Full setup and curl example →](web-retrieval.md#searxng-search)
 
-For JSON clients, add the following inside the `agent-tasker` entry:
+For **Brave**, obtain a [Brave Search API key](https://api-dashboard.search.brave.com/), append `--search-provider brave` to the server arguments, and make `BRAVE_SEARCH_API_KEY` available to the **server process**, not just your terminal.
+
+### Copy-ready Cursor search config
+
+Replace `YOUR_API_KEY`, merge into `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global), and restart Cursor:
+
+```json
+{
+  "mcpServers": {
+    "agent-tasker": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/S3bRR/agent-tasker-mcp.git", "agent-tasker-mcp-server", "--search-provider", "brave"],
+      "env": {"BRAVE_SEARCH_API_KEY": "YOUR_API_KEY"}
+    }
+  }
+}
+```
+
+### Other clients
+
+In JSON configs, each server argument is a **separate array item**: `"--search-provider", "brave"`, not `"--search-provider brave"`. Add the following inside the `agent-tasker` entry:
 
 ```json
 "env": {"BRAVE_SEARCH_API_KEY": "YOUR_API_KEY"}
@@ -70,7 +91,13 @@ OpenCode calls this field `environment`. For Codex, add this TOML table after it
 BRAVE_SEARCH_API_KEY = "YOUR_API_KEY"
 ```
 
-Alternatively, Codex can forward an existing environment variable with `env_vars = ["BRAVE_SEARCH_API_KEY"]` in the server table. For Claude Code, register a search-enabled server directly (remove an existing `agent-tasker` entry first with `claude mcp remove agent-tasker` if needed):
+Alternatively, register a search-enabled server directly with Codex (remove an existing entry first with `codex mcp remove agent-tasker` if needed):
+
+```bash
+codex mcp add agent-tasker --env BRAVE_SEARCH_API_KEY=YOUR_API_KEY -- uvx --from git+https://github.com/S3bRR/agent-tasker-mcp.git agent-tasker-mcp-server --search-provider brave
+```
+
+Codex can also forward an existing environment variable with `env_vars = ["BRAVE_SEARCH_API_KEY"]` in the server table. For Claude Code, register a search-enabled server directly (remove an existing `agent-tasker` entry first with `claude mcp remove agent-tasker` if needed):
 
 ```bash
 claude mcp add --env BRAVE_SEARCH_API_KEY=YOUR_API_KEY --scope user --transport stdio agent-tasker -- uvx --from git+https://github.com/S3bRR/agent-tasker-mcp.git agent-tasker-mcp-server --search-provider brave
@@ -79,6 +106,10 @@ claude mcp add --env BRAVE_SEARCH_API_KEY=YOUR_API_KEY --scope user --transport 
 Prefer your harness's secret/environment facilities where available. Do not commit API keys or expose them in shell history. The preset defaults to one request/second; agent concurrency never bypasses provider quotas.
 
 For other HTTP search APIs or custom quotas, use `--providers-file /absolute/path/to/providers.json` instead. See the [Brave provider template](../examples/brave-providers.json) and [provider reference](reference.md#http-search-providers). The preset overrides `AGENT_TASKER_PROVIDERS_FILE`; explicit `--providers-file` and `--search-provider` cannot be combined.
+
+## Difficult websites
+
+Page tasks prefer native Markdown, then extract HTML/plain text locally. Add `--reader-fallback jina` to opt in to hosted reading of public JavaScript-heavy pages or HTTP 403 responses. Optional reader authentication uses `JINA_API_KEY` in the server environment, configured like the Brave key above. This shares URLs with a third party; private URLs are rejected and tasks can opt out. [Behavior, quotas, and privacy →](web-retrieval.md#optional-hosted-reader)
 
 ## Other MCP servers
 
@@ -112,7 +143,7 @@ cd agent-tasker-mcp
 ./setup.sh --client cursor --search-provider brave
 ```
 
-The script creates `.venv`, installs the package, and prints configuration using its absolute Python path. It does not write harness settings. Keep the checkout/venv in place. Options: `--venv-dir PATH`, `--quiet`, `--recreate`, `--providers-file PATH`, `--mcp-config PATH`.
+The script creates `.venv`, installs the package, and prints configuration using its absolute Python path. It does not write harness settings. Keep the checkout/venv in place. Options: `--venv-dir PATH`, `--quiet`, `--recreate`, `--providers-file PATH`, `--mcp-config PATH`, `--searxng-url URL`, `--reader-fallback jina`.
 
 ### Windows (PowerShell)
 

@@ -11,6 +11,8 @@ CLIENT=generic
 PROVIDERS_FILE=""
 MCP_CONFIG=""
 SEARCH_PROVIDER=""
+SEARXNG_URL=""
+READER_FALLBACK=none
 
 usage() {
   cat <<'EOF'
@@ -19,7 +21,9 @@ Usage: ./setup.sh [options]
 Options:
   --client NAME         Print config for claude, codex, cursor, vscode, opencode,
                         or generic (default). Does not edit your settings.
-  --search-provider brave  Enable Brave search (needs BRAVE_SEARCH_API_KEY)
+  --search-provider NAME  brave (BRAVE_SEARCH_API_KEY) or searxng
+  --searxng-url URL     SearXNG base URL (default: http://localhost:8080)
+  --reader-fallback jina  Opt in to hosted reading of public webpages
   --providers-file PATH Default HTTP search provider JSON file
   --mcp-config PATH     Other stdio MCP servers to connect to
   --venv-dir PATH       Virtual environment directory (default: ./.venv)
@@ -39,13 +43,15 @@ while [[ $# -gt 0 ]]; do
       VENV_DIR="$2"
       shift 2
       ;;
-    --client|--providers-file|--mcp-config|--search-provider)
+    --client|--providers-file|--mcp-config|--search-provider|--searxng-url|--reader-fallback)
       [[ $# -lt 2 ]] && { echo "Error: $1 requires a value"; exit 1; }
       case "$1" in
         --client) CLIENT="$2" ;;
         --providers-file) PROVIDERS_FILE="$2" ;;
         --mcp-config) MCP_CONFIG="$2" ;;
         --search-provider) SEARCH_PROVIDER="$2" ;;
+        --searxng-url) SEARXNG_URL="$2" ;;
+        --reader-fallback) READER_FALLBACK="$2" ;;
       esac
       shift 2
       ;;
@@ -73,8 +79,16 @@ case "$CLIENT" in
   claude|codex|cursor|vscode|opencode|generic) ;;
   *) echo "Error: unsupported client '$CLIENT'"; exit 1 ;;
 esac
-if [[ -n "$SEARCH_PROVIDER" && "$SEARCH_PROVIDER" != "brave" ]]; then
-  echo "Error: --search-provider supports brave"
+case "$SEARCH_PROVIDER" in
+  ""|brave|searxng) ;;
+  *) echo "Error: --search-provider supports brave or searxng"; exit 1 ;;
+esac
+case "$READER_FALLBACK" in
+  none|jina) ;;
+  *) echo "Error: --reader-fallback supports none or jina"; exit 1 ;;
+esac
+if [[ -n "$SEARXNG_URL" && "$SEARCH_PROVIDER" != "searxng" ]]; then
+  echo "Error: --searxng-url requires --search-provider searxng"
   exit 1
 fi
 if [[ -n "$SEARCH_PROVIDER" && -n "$PROVIDERS_FILE" ]]; then
@@ -175,6 +189,8 @@ EOF
 
 CONFIG_ARGS=(--print-config "$CLIENT")
 [[ -n "$SEARCH_PROVIDER" ]] && CONFIG_ARGS+=(--search-provider "$SEARCH_PROVIDER")
+[[ -n "$SEARXNG_URL" ]] && CONFIG_ARGS+=(--searxng-url "$SEARXNG_URL")
+[[ "$READER_FALLBACK" != none ]] && CONFIG_ARGS+=(--reader-fallback "$READER_FALLBACK")
 [[ -n "$PROVIDERS_FILE" ]] && CONFIG_ARGS+=(--providers-file "$PROVIDERS_FILE")
 [[ -n "$MCP_CONFIG" ]] && CONFIG_ARGS+=(--mcp-config "$MCP_CONFIG")
 "$VENV_DIR/bin/agent-tasker-mcp-server" "${CONFIG_ARGS[@]}"

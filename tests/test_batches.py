@@ -46,7 +46,7 @@ class BatchTests(unittest.TestCase):
         return [{"name": str(i), "task_type": "web_scrape", "url": f"https://example.com/{i}"} for i in range(count)]
 
     def mock_fetch(self, worker):
-        context = patch("agent_tasker_mcp.server.execute_web_scrape", side_effect=worker)
+        context = patch("agent_tasker_mcp.server.execute_web_scrape", side_effect=lambda payload, **kwargs: worker(payload))
         context.start()
         self.addCleanup(context.stop)
 

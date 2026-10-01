@@ -24,7 +24,7 @@ except ImportError:  # Windows
 from .batches import BatchManager
 from .cache import SearchCache
 from .common import apply_output_mode
-from .configuration import CLIENTS, SEARCH_PROVIDERS, render_config, server_args
+from .configuration import CLIENTS, SEARCH_PROVIDERS, render_config, search_providers, server_args
 from .executors.discovery import execute_discovery_search
 from .executors.http import execute_web_scrape, RateLimiter
 from .models import DEFAULT_MAX_BATCHES, DEFAULT_BATCH_TTL_SECONDS, DEFAULT_MAX_PAYLOAD_BYTES, DEFAULT_MAX_TASKS, DEFAULT_MAX_WORKERS, TaskType
@@ -85,13 +85,14 @@ def _tool_payload_failed(payload):
 class AgentTasker:
     def __init__(self, max_workers=DEFAULT_MAX_WORKERS, max_tasks=DEFAULT_MAX_TASKS,
                  max_payload_bytes=DEFAULT_MAX_PAYLOAD_BYTES, providers=None, mcp_servers=None, max_memory_mb=0,
-                 cache_ttl_seconds=60, cache_max_entries=128, cache_max_bytes=8_000_000):
+                 cache_ttl_seconds=60, cache_max_entries=128, cache_max_bytes=8_000_000, reader_fallback="none"):
         for name, value in (("max_workers", max_workers), ("max_tasks", max_tasks), ("max_payload_bytes", max_payload_bytes)):
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"'{name}' must be a positive integer")
         self.max_workers, self.max_tasks, self.max_payload_bytes = max_workers, max_tasks, max_payload_bytes
         self.max_memory_mb = max_memory_mb
         self.providers = providers
+        self.reader_fallback = validate_payload(TaskType.WEB_SCRAPE, {"url": "https://example.com", "reader_fallback": reader_fallback})["reader_fallback"]
         if providers is not None:
             validate_payload(TaskType.DISCOVERY_SEARCH, {"query": "config validation", "providers": providers})
         self.remote = RemoteTools(mcp_servers)
@@ -126,7 +127,11 @@ class AgentTasker:
             names.add(name)
             if kind == TaskType.DISCOVERY_SEARCH and "providers" not in source and self.providers is not None:
                 source = {**source, "providers": self.providers}
+            if kind in {TaskType.WEB_SCRAPE, TaskType.DISCOVERY_SEARCH}:
+                source = {"reader_fallback": self.reader_fallback, **source}
             payload = validate_payload(kind, source)
+            if payload.get("reader_fallback") == "jina" and self.reader_fallback != "jina":
+                raise ValueError("Jina fallback is disabled; start the server with --reader-fallback jina to opt in")
             if len(dumps(payload).encode("utf-8")) > self.max_payload_bytes:
                 raise ValueError("Payload too large")
             dependencies = definition[3] if len(definition) == 4 else []
@@ -157,7 +162,7 @@ class AgentTasker:
             if task.task_type == TaskType.DISCOVERY_SEARCH:
                 result = self.cache.run(task.payload, lambda payload: execute_discovery_search(payload, limiter=self.limiter))
             elif task.task_type == TaskType.WEB_SCRAPE:
-                result = execute_web_scrape(task.payload)
+                result = execute_web_scrape(task.payload, limiter=self.limiter)
             else:
                 result = self.remote.call(task.payload)
                 if result.get("isError"):
@@ -296,14 +301,14 @@ def _tool_catalog():
 
 
 class MCPServer:
-    def __init__(self, max_workers=DEFAULT_MAX_WORKERS, providers=None, mcp_servers=None):
+    def __init__(self, max_workers=DEFAULT_MAX_WORKERS, providers=None, mcp_servers=None, reader_fallback="none"):
         self.tasker = AgentTasker(max_workers=max_workers, providers=providers, mcp_servers=mcp_servers,
             max_tasks=_env_int("AGENT_TASKER_MAX_TASKS", DEFAULT_MAX_TASKS),
             max_payload_bytes=_env_int("AGENT_TASKER_MAX_PAYLOAD_BYTES", DEFAULT_MAX_PAYLOAD_BYTES),
             max_memory_mb=_env_int("AGENT_TASKER_MAX_MEMORY_MB", 0),
             cache_ttl_seconds=_env_int("AGENT_TASKER_CACHE_TTL_SECONDS", 60),
             cache_max_entries=_env_int("AGENT_TASKER_CACHE_MAX_ENTRIES", 128),
-            cache_max_bytes=_env_int("AGENT_TASKER_CACHE_MAX_BYTES", 8_000_000))
+            cache_max_bytes=_env_int("AGENT_TASKER_CACHE_MAX_BYTES", 8_000_000), reader_fallback=reader_fallback)
         self.batches = BatchManager(self.tasker, max_batches=_env_int("AGENT_TASKER_MAX_BATCHES", DEFAULT_MAX_BATCHES),
                                     ttl_seconds=_env_int("AGENT_TASKER_BATCH_TTL_SECONDS", DEFAULT_BATCH_TTL_SECONDS))
         self._initialize_sent = self._ready = False
@@ -319,7 +324,10 @@ class MCPServer:
     def _list_tools(self):
         tools = []
         for name, description, schema in _tool_catalog():
+            if name == "execute":
+                schema["properties"]["reader_fallback"]["default"] = self.tasker.reader_fallback
             if name == "execute_batch":
+                schema["properties"]["tasks"]["items"]["properties"]["reader_fallback"]["default"] = self.tasker.reader_fallback
                 schema["properties"]["concurrency"].update(maximum=self.tasker.max_workers, default=self.tasker.max_workers)
                 schema["properties"]["tasks"]["maxItems"] = self.tasker.max_tasks
             tool = {"name": name, "title": name.replace("_", " ").title(), "description": description, "inputSchema": schema}
@@ -383,6 +391,7 @@ class MCPServer:
             return {"protocolVersion": self._protocol_version, "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": f"Search-first: discovery_search, web_scrape, or mcp_tool. Use execute_batch for up to {self.tasker.max_workers} parallel calls; wait=false returns a batch_id for get_batch/cancel_batch. Compact mode returns only finished tasks. cache=false forces fresh searches. list_remote_tools discovers configured MCP tools. "
+                    + ("Jina fallback is enabled for public pages; reader_fallback=none disables it. " if self.tasker.reader_fallback == "jina" else "Hosted reader fallback is disabled. ")
                     + ("Default search providers are configured. " if self.tasker.providers else "Search needs provider definitions. ")
                     + f"Configured MCP servers: {', '.join(self.tasker.remote.clients) or 'none'}."}
         if method == "ping":
@@ -503,8 +512,8 @@ class MCPServer:
             self.close()
 
 
-def create_server(max_workers=DEFAULT_MAX_WORKERS, providers=None, mcp_servers=None):
-    return MCPServer(max_workers, providers, mcp_servers)
+def create_server(max_workers=DEFAULT_MAX_WORKERS, providers=None, mcp_servers=None, reader_fallback="none"):
+    return MCPServer(max_workers, providers, mcp_servers, reader_fallback)
 
 
 def main(argv=None):
@@ -512,19 +521,24 @@ def main(argv=None):
     parser.add_argument("--workers", "-w", type=int, default=DEFAULT_MAX_WORKERS, help="Parallel workers (default: 10)")
     search = parser.add_mutually_exclusive_group()
     search.add_argument("--providers-file", default=os.getenv("AGENT_TASKER_PROVIDERS_FILE"), help="Default HTTP search provider JSON array")
-    search.add_argument("--search-provider", choices=SEARCH_PROVIDERS, help="Built-in search setup; brave reads BRAVE_SEARCH_API_KEY")
+    search.add_argument("--search-provider", choices=SEARCH_PROVIDERS, help="Built-in Brave (BRAVE_SEARCH_API_KEY) or SearXNG search")
+    parser.add_argument("--searxng-url", help="SearXNG instance base URL (default: http://localhost:8080)")
+    parser.add_argument("--reader-fallback", choices=["none", "jina"], default="none", help="Opt in to hosted Jina fallback for public webpages; optionally reads JINA_API_KEY")
     parser.add_argument("--mcp-config", default=os.getenv("AGENT_TASKER_MCP_CONFIG"), help="JSON config with mcpServers (stdio only)")
     parser.add_argument("--print-config", choices=CLIENTS, help="Print client configuration and exit; never changes harness settings")
     args = parser.parse_args(argv)
     if args.workers < 1:
         parser.error("--workers must be a positive integer")
+    try:
+        providers = search_providers(args.search_provider, args.searxng_url)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.print_config:
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8")
-        print(render_config(args.print_config, sys.executable, server_args(args.workers, args.providers_file, args.mcp_config, args.search_provider)), end="")
+        print(render_config(args.print_config, sys.executable, server_args(args.workers, args.providers_file, args.mcp_config, args.search_provider, args.searxng_url, args.reader_fallback)), end="")
         return 0
     try:
-        providers = SEARCH_PROVIDERS.get(args.search_provider)
         if args.providers_file and not args.search_provider:
             providers = json.loads(Path(args.providers_file).read_text())
         remote = json.loads(Path(args.mcp_config).read_text()) if args.mcp_config else {}
@@ -532,7 +546,7 @@ def main(argv=None):
             raise ValueError("Provider config must be a JSON array")
         if not isinstance(remote, dict) or not isinstance(remote.get("mcpServers", {}), dict) or (args.mcp_config and "mcpServers" not in remote):
             raise ValueError("MCP config needs an mcpServers object")
-        server = create_server(args.workers, providers, remote.get("mcpServers", {}))
+        server = create_server(args.workers, providers, remote.get("mcpServers", {}), reader_fallback=args.reader_fallback)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     for stream in (sys.stdin, sys.stdout):

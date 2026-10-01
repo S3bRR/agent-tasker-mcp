@@ -5,9 +5,11 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 import importlib.util
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 
 HAS_SDK = importlib.util.find_spec("mcp") is not None and importlib.util.find_spec("jsonschema") is not None
@@ -71,6 +73,47 @@ class SDKTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.isError, result)
             self.assertEqual(result.structuredContent["status"], "completed")
             self.assertEqual([task["result"]["structuredContent"]["value"] for task in result.structuredContent["results"]], list(range(5)))
+
+    async def test_searxng_markdown_context_and_background_pages_over_stdio(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/search?"):
+                    body = json.dumps({"results": [{"title": "Native page", "url": f"http://127.0.0.1:{self.server.server_port}/page", "content": "snippet"}], "unresponsive_engines": []}).encode()
+                    media = "application/json"
+                else:
+                    body, media = '# Native 🌍\n\nVerbatim `<T>` and readable content.'.encode(), "text/markdown"
+                self.send_response(200)
+                self.send_header("Content-Type", media)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(lambda: thread.join(5))
+        self.addCleanup(httpd.shutdown)
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        self.params.args.extend(["--search-provider", "searxng", "--searxng-url", base, "--reader-fallback", "jina"])
+        async with self.connect():
+            tools = {tool.name: tool for tool in self.catalog.tools}
+            self.assertEqual(tools["execute"].inputSchema["properties"]["reader_fallback"]["default"], "jina")
+            result = await self.session.call_tool("execute", {"task_type": "discovery_search", "query": "native page", "fetch_top_results": 1})
+            self.assertFalse(result.isError, result)
+            Draft202012Validator(tools["execute"].outputSchema).validate(result.structuredContent)
+            context = result.structuredContent["task"]["result"]["results"][0]["page_context"]
+            self.assertEqual((context["source"], context["extraction"]), ("direct", "markdown"))
+            self.assertIn("<T>", context["text"])
+            batch = await self.session.call_tool("execute_batch", {"wait": False, "concurrency": 5, "tasks": [
+                {"name": str(i), "task_type": "web_scrape", "url": base + "/page"} for i in range(5)]})
+            collected = await self.session.call_tool("get_batch", {"batch_id": batch.structuredContent["batch_id"], "wait_seconds": 5})
+            self.assertFalse(collected.isError, collected)
+            self.assertEqual(len(collected.structuredContent["results"]), 5)
+            self.assertTrue(all(task["result"]["title"] == "Native 🌍" for task in collected.structuredContent["results"]))
 
     async def test_traditional_concurrent_tool_requests_leave_ping_responsive(self):
         async with self.connect():

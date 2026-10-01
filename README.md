@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.S3bRR/agent-tasker-mcp -->
 
-**Parallel searches and MCP tool calls for your coding agent.**
+**Search the web, read websites, and run MCP tools in parallel.**
 
 Run ten searches or five calls to another MCP tool in one batch. Your agent picks concurrency up to your limit (default: **10**). Background batches, search caching, rate limiting, and compact results are built in.
 
@@ -10,7 +10,9 @@ Python 3.10+. **Zero third-party runtime dependencies.** Local stdio MCP transpo
 
 ## Quick start
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git, then pick your harness. `uvx` installs the server on first use; no clone needed.
+**1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git.** `uv` includes `uvx`, which installs the server on first use. No clone needed.
+
+**2. Add AgentTasker to your coding app.** Pick one option below.
 
 ### Claude Code
 
@@ -26,7 +28,7 @@ codex mcp add agent-tasker -- uvx --from git+https://github.com/S3bRR/agent-task
 
 ### Cursor / Claude Desktop / other JSON-based clients
 
-Merge this into your MCP config. Cursor uses `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project). Claude Desktop: **Settings → Developer → Edit Config**.
+Create your MCP config with this JSON, or merge the entry into an existing file. Cursor uses `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project). Claude Desktop: **Settings → Developer → Edit Config**.
 
 ```json
 {
@@ -41,9 +43,13 @@ Merge this into your MCP config. Cursor uses `~/.cursor/mcp.json` (global) or `.
 
 For Cursor, also add `"type": "stdio"` inside the `agent-tasker` entry.
 
-**VS Code / Copilot:** use `.vscode/mcp.json`, change `mcpServers` to `servers`, and add `"type": "stdio"` inside the entry. **OpenCode:** [copy-ready config](docs/setup.md#opencode).
+**VS Code / Copilot:** [copy-ready config](docs/setup.md#vs-code--copilot). **OpenCode:** [copy-ready config](docs/setup.md#opencode).
 
-Restart your harness and enable/trust the server if prompted. You should see **five tools**: `execute`, `execute_batch`, `get_batch`, `cancel_batch`, and `list_remote_tools`.
+**3. Restart your app and approve/enable AgentTasker if prompted.** Ask:
+
+> Use AgentTasker to read https://example.com and tell me its title.
+
+This needs **no API key or search setup**. You should see five tools: `execute`, `execute_batch`, `get_batch`, `cancel_batch`, and `list_remote_tools`.
 
 > GUI app cannot find `uvx`? Set `command` to its full path (`command -v uvx` on macOS/Linux, `where.exe uvx` on Windows). First launch needs network access; increase your client's startup timeout if necessary.
 
@@ -53,7 +59,9 @@ Restart your harness and enable/trust the server if prompted. You should see **f
 
 > Use AgentTasker to fetch these five URLs in parallel and summarize them. Use a background batch if it might take a while.
 
-**Web search:** append `--search-provider brave` to the server arguments and supply `BRAVE_SEARCH_API_KEY` in your harness's server environment. No provider file needed. [Key setup and other providers →](docs/setup.md#web-search)
+**Web search:** append `--search-provider brave` to the server arguments and set `BRAVE_SEARCH_API_KEY` in its environment. Or use `--search-provider searxng --searxng-url http://localhost:8080` with a running SearXNG instance that enables JSON. No provider file needed. [Copy-ready search setup →](docs/setup.md#web-search)
+
+**Difficult websites:** Markdown is preferred, with local HTML extraction otherwise. Opt in to `--reader-fallback jina` for hosted rendering fallback on public pages; it shares URLs with Jina and is off by default. [Website reading, privacy, and curl examples →](docs/web-retrieval.md)
 
 > Use AgentTasker to run ten different searches about Python asyncio with concurrency 10, in the background. Poll for results and give me a concise summary.
 
@@ -61,7 +69,7 @@ Restart your harness and enable/trust the server if prompted. You should see **f
 
 > Use AgentTasker to call the fetch server's fetch tool for five URLs with concurrency 5.
 
-AgentTasker starts its **own configured stdio connections**; it cannot reuse your harness's existing MCP sessions. Remote tools are not cached or retried because they may have side effects. Provider quotas still apply; Brave's preset defaults to one request/second.
+AgentTasker starts its **own configured stdio connections**; it cannot reuse your harness's existing MCP sessions. Remote tools are not cached or retried because they may have side effects. Provider quotas still apply; search presets default to one request/second.
 
 ## Prefer a local install?
 
@@ -73,7 +81,7 @@ cd agent-tasker-mcp
 ./setup.sh --client cursor
 ```
 
-Replace `cursor` with `claude`, `codex`, `vscode`, `opencode`, or `generic`. The installer prints ready-to-paste config with absolute paths; it **never overwrites your settings**. Keep the checkout/virtual environment in place.
+Replace `cursor` with `claude`, `codex`, `vscode`, `opencode`, or `generic`. Paste the printed config into [your app's config file](docs/setup.md#choose-your-harness), then restart the app. The installer **never overwrites your settings**. Keep the checkout/virtual environment in place.
 
 ```bash
 # Include search or other MCP servers in the generated config:

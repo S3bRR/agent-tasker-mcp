@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-tasker-mcp-server"
 version = "2.0.0"
-description = "Lightweight MCP server for parallel searches and configured MCP tools"
+description = "Search the web, read websites, and run MCP tools in parallel"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

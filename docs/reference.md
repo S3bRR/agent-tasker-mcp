@@ -73,7 +73,7 @@ Cancel with `cancel_batch` using the same `batch_id`. Cancellation is cooperativ
 
 ## HTTP search providers
 
-Use `--search-provider brave` for built-in Brave setup, or configure a JSON array with `--providers-file` or `AGENT_TASKER_PROVIDERS_FILE`. Task-level `providers` override defaults. See [the Brave configuration](../examples/brave-providers.json):
+Use `--search-provider brave` or `--search-provider searxng --searxng-url http://localhost:8080` for built-in setup ([details](web-retrieval.md)), or configure a JSON array with `--providers-file` or `AGENT_TASKER_PROVIDERS_FILE`. Task-level `providers` override defaults. See [the Brave configuration](../examples/brave-providers.json):
 
 ```json
 [
@@ -92,11 +92,11 @@ Use `--search-provider brave` for built-in Brave setup, or configure a JSON arra
 
 Provide your API key through the server environment, not tool arguments. API keys, pricing, availability, and quotas are your responsibility. Choose `requests_per_second` for your plan; the example uses conservative one-request-per-second spacing. Ten searches can be submitted together, but throttling deliberately spaces their outbound requests.
 
-Required provider fields are shown above except `headers_env`, `snippet_path`, and `requests_per_second`, which are optional. Also supported: `headers`, `method`, `body_template`, `result_limit`. Paths use dot notation, including numeric indexes; an empty `items_path` selects a root array.
+Required provider fields are shown above except `headers_env`, `snippet_path`, and `requests_per_second`, which are optional. Also supported: `headers`, `method`, `body_template`, `result_limit`, and `errors_path` (upstream errors turn otherwise valid results into uncached partial results). Paths use dot notation, including numeric indexes; an empty `items_path` selects a root array.
 
 Templates accept `{query_encoded}` for URLs, `{query_json}` for JSON-escaped text, `{query}` for raw text, and `{limit}`. Double literal braces in JSON bodies: `{{"query": {query_json}, "limit": {limit}}}`.
 
-`max_results` defaults to 10. Set `fetch_top_results` to fetch page context and `fetch_max_chars` to bound text per page. Providers and context fetches run sequentially **within** a query; independent queries run in parallel. Ranking is lightweight lexical matching, not semantic reranking. HTTP failures are not reported as successful empty searches.
+`max_results` defaults to 10. Set `fetch_top_results` to fetch page context and `fetch_max_chars` to bound text per page. Providers and context fetches run sequentially **within** a query; independent queries run in parallel. Ranking is lightweight lexical matching, not semantic reranking. HTTP failures are not reported as successful empty searches. Website context uses the [Markdown-first pipeline](web-retrieval.md#website-analysis); optional `reader_fallback` inherits the operator's setting and may be disabled per task. Hosted Jina fallback requires `--reader-fallback jina` at startup and is restricted to public URLs.
 
 ### Cache and throttling behavior
 

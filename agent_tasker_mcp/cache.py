@@ -24,6 +24,8 @@ class SearchCache:
             return search(payload)
         # Include credential changes without retaining plaintext credential values in keys.
         credentials = {name: os.getenv(name) for provider in payload["providers"] for name in provider.get("headers_env", {}).values()}
+        if payload.get("reader_fallback") == "jina" and payload.get("fetch_top_results"):
+            credentials["JINA_API_KEY"] = os.getenv("JINA_API_KEY")
         key = sha256(json.dumps([payload, credentials], sort_keys=True).encode()).digest()
         with self._lock:
             for expired in [key for key, (until, _, _) in self._cached.items() if until <= time.monotonic()]:
@@ -38,7 +40,7 @@ class SearchCache:
         try:
             result = search(payload)
             size = len(json.dumps(result, ensure_ascii=False).encode())
-            healthy = all(s["status"] == "ok" for s in result["provider_statuses"]) and not any("page_context_error" in r for r in result["results"])
+            healthy = all(s["status"] == "ok" for s in result["provider_statuses"]) and not any("page_context_error" in r or "reader_error" in r.get("page_context", {}) for r in result["results"])
             with self._lock:
                 if healthy and size <= self.max_bytes:
                     while self._cached and (len(self._cached) >= self.max_entries or self._bytes + size > self.max_bytes):
